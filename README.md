@@ -8,6 +8,9 @@ This project analyzes the Epstein document corpus to extract structured informat
 
 **Live Demo:** [Deployed on Render](https://epstein-doc-explorer-1.onrender.com/)
 
+Source documents are available here: https://drive.google.com/drive/folders/1ldncvdqIf6miiskDp_EDuGSDAaI_fJx8
+A pre-split version of the first set of docs is included in the repo. I didn't see that there was a second tranche so that data is to-be-added.
+
 ---
 
 ## Architecture Overview
