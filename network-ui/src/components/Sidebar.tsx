@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { searchActors } from '../api';
 import type { Stats, Actor, TagCluster } from '../types';
 
@@ -11,6 +11,14 @@ interface SidebarProps {
   tagClusters: TagCluster[];
   enabledClusterIds: Set<number>;
   onToggleCluster: (clusterId: number) => void;
+  enabledCategories: Set<string>;
+  onToggleCategory: (category: string) => void;
+  yearRange: [number, number];
+  onYearRangeChange: (range: [number, number]) => void;
+  includeUndated: boolean;
+  onIncludeUndatedChange: (include: boolean) => void;
+  keywords: string;
+  onKeywordsChange: (keywords: string) => void;
 }
 
 export default function Sidebar({
@@ -21,12 +29,25 @@ export default function Sidebar({
   onLimitChange,
   tagClusters,
   enabledClusterIds,
-  onToggleCluster
+  onToggleCluster,
+  enabledCategories,
+  onToggleCategory,
+  yearRange,
+  onYearRangeChange,
+  includeUndated,
+  onIncludeUndatedChange,
+  keywords,
+  onKeywordsChange
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Actor[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [categoriesExpanded, setCategoriesExpanded] = useState(false);
+  const [contentFiltersExpanded, setContentFiltersExpanded] = useState(false);
+  const [localYearRange, setLocalYearRange] = useState<[number, number]>(yearRange);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [minSliderZIndex, setMinSliderZIndex] = useState(4);
+  const [maxSliderZIndex, setMaxSliderZIndex] = useState(3);
 
   useEffect(() => {
     const performSearch = async () => {
@@ -51,18 +72,73 @@ export default function Sidebar({
     return () => clearTimeout(timeoutId);
   }, [searchQuery]);
 
+  // Sync external yearRange changes to local state
+  useEffect(() => {
+    setLocalYearRange(yearRange);
+  }, [yearRange]);
+
+  // Debounce year range changes
+  const handleYearRangeChange = (newRange: [number, number]) => {
+    setLocalYearRange(newRange);
+
+    // Clear existing timer
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    // Set new timer for 2 seconds
+    debounceTimerRef.current = setTimeout(() => {
+      onYearRangeChange(newRange);
+    }, 2000);
+  };
+
+  // Handle mouse movement over slider to dynamically adjust z-index based on proximity
+  const handleSliderMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const sliderWidth = rect.width;
+
+    // Calculate positions of the two handles as percentages
+    const minPosition = ((localYearRange[0] - 1970) / (2025 - 1970)) * sliderWidth;
+    const maxPosition = ((localYearRange[1] - 1970) / (2025 - 1970)) * sliderWidth;
+
+    // Calculate distance from mouse to each handle
+    const distanceToMin = Math.abs(mouseX - minPosition);
+    const distanceToMax = Math.abs(mouseX - maxPosition);
+
+    // Put the closer handle on top
+    if (distanceToMin < distanceToMax) {
+      setMinSliderZIndex(4);
+      setMaxSliderZIndex(3);
+    } else {
+      setMinSliderZIndex(3);
+      setMaxSliderZIndex(4);
+    }
+  };
+
   return (
-    <div className="w-80 bg-gray-800 border-r border-gray-700 flex flex-col">
+    <div className="w-80 bg-gray-800 border-r border-gray-700 flex flex-col h-screen overflow-hidden">
       {/* Header */}
-      <div className="px-6 py-3 border-b border-gray-700">
+      <div className="px-6 py-3 border-b border-gray-700 flex-shrink-0">
         <h1 className="font-bold text-blue-400" style={{ fontSize: '20px' }}>
           📊 The Epstein Network
         </h1>
+        <a
+          href="https://github.com/maxandrews/Epstein-doc-explorer"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1.5 mt-2 text-xs text-gray-400 hover:text-blue-400 transition-colors"
+        >
+          <span className="underline">Github Repo with data</span>
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+          </svg>
+        </a>
       </div>
 
       {/* Stats */}
       {stats && (
-        <div className="p-4 border-b border-gray-700">
+        <div className="p-4 border-b border-gray-700 flex-shrink-0">
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-gray-400">Documents:</span>
@@ -87,13 +163,13 @@ export default function Sidebar({
       )}
 
       {/* Controls */}
-      <div className="p-4 border-b border-gray-700">
+      <div className="p-4 border-b border-gray-700 flex-shrink-0">
         <h2 className="text-lg font-semibold mb-3">Controls</h2>
 
         {/* Limit Slider */}
         <div className="mb-4">
           <label className="block text-sm text-gray-400 mb-2">
-            Relationships to display: {limit}
+            Relationships to display: {limit.toLocaleString()}
           </label>
           <input
             type="range"
@@ -106,10 +182,87 @@ export default function Sidebar({
           />
         </div>
 
+        {/* Time Range Slider */}
+        <div className="mb-4">
+          <label className="block text-sm text-gray-400 mb-2">
+            Time range: {localYearRange[0]} - {localYearRange[1]}
+          </label>
+          <div className="relative pt-1">
+            <div className="flex justify-between text-xs text-gray-500 mb-1">
+              <span>1970</span>
+              <span>2025</span>
+            </div>
+            <div className="relative h-6" onMouseMove={handleSliderMouseMove}>
+              {/* Max year slider */}
+              <input
+                type="range"
+                min="1970"
+                max="2025"
+                step="1"
+                value={localYearRange[1]}
+                onChange={(e) => {
+                  const newMax = parseInt(e.target.value);
+                  if (newMax >= localYearRange[0]) {
+                    handleYearRangeChange([localYearRange[0], newMax]);
+                  }
+                }}
+                className="absolute top-2 w-full h-2 bg-transparent appearance-none cursor-pointer"
+                style={{
+                  zIndex: maxSliderZIndex,
+                  pointerEvents: 'auto',
+                }}
+              />
+              {/* Min year slider */}
+              <input
+                type="range"
+                min="1970"
+                max="2025"
+                step="1"
+                value={localYearRange[0]}
+                onChange={(e) => {
+                  const newMin = parseInt(e.target.value);
+                  if (newMin <= localYearRange[1]) {
+                    handleYearRangeChange([newMin, localYearRange[1]]);
+                  }
+                }}
+                className="absolute top-2 w-full h-2 bg-transparent appearance-none cursor-pointer"
+                style={{
+                  zIndex: minSliderZIndex,
+                  pointerEvents: 'auto',
+                }}
+              />
+              {/* Track background */}
+              <div className="absolute top-2 w-full h-2 bg-gray-700 rounded-lg pointer-events-none" style={{ zIndex: 1 }}>
+                <div
+                  className="absolute h-2 bg-blue-600 rounded-lg"
+                  style={{
+                    left: `${((localYearRange[0] - 1970) / (2025 - 1970)) * 100}%`,
+                    right: `${100 - ((localYearRange[1] - 1970) / (2025 - 1970)) * 100}%`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Include undated events checkbox */}
+          <div className="mt-3 flex items-center">
+            <input
+              type="checkbox"
+              id="includeUndated"
+              checked={includeUndated}
+              onChange={(e) => onIncludeUndatedChange(e.target.checked)}
+              className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+            />
+            <label htmlFor="includeUndated" className="ml-2 text-sm text-gray-400 cursor-pointer">
+              Include undated events
+            </label>
+          </div>
+        </div>
+
         {/* Search */}
         <div className="mb-4 relative">
           <label className="block text-sm text-gray-400 mb-2">
-            Search actors:
+            Search entities:
           </label>
           <input
             type="text"
@@ -152,6 +305,23 @@ export default function Sidebar({
           )}
         </div>
 
+        {/* Keyword Filter */}
+        <div className="mb-4">
+          <label className="block text-sm text-gray-400 mb-2">
+            Keyword filter:
+          </label>
+          <input
+            type="text"
+            value={keywords}
+            onChange={(e) => onKeywordsChange(e.target.value)}
+            placeholder="e.g., massage, aircraft, island"
+            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-sm focus:outline-none focus:border-blue-500"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Comma-separated keywords (fuzzy match)
+          </p>
+        </div>
+
         {/* Selected Actor Indicator */}
         {selectedActor && (
           <div className="mb-4">
@@ -171,64 +341,74 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* Tag Cluster Filters */}
-      <div className="p-4 border-b border-gray-700">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">Content Filters</h2>
-          <div className="flex gap-1.5">
-            <button
-              onClick={() => {
-                tagClusters.forEach(cluster => {
-                  if (!enabledClusterIds.has(cluster.id)) {
-                    onToggleCluster(cluster.id);
-                  }
-                });
-              }}
-              className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
-              style={{ fontSize: '9px' }}
-            >
-              Select All
-            </button>
-            <button
-              onClick={() => {
-                tagClusters.forEach(cluster => {
-                  if (enabledClusterIds.has(cluster.id)) {
-                    onToggleCluster(cluster.id);
-                  }
-                });
-              }}
-              className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
-              style={{ fontSize: '9px' }}
-            >
-              Deselect All
-            </button>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {tagClusters.map((cluster) => {
-            const isEnabled = enabledClusterIds.has(cluster.id);
-            return (
+      {/* Scrollable Filters Container */}
+      <div className="flex-1 overflow-y-auto">
+        {/* Tag Cluster Filters */}
+        <div className="p-4 border-b border-gray-700">
+        <button
+          onClick={() => setContentFiltersExpanded(!contentFiltersExpanded)}
+          className="w-full flex items-center justify-between text-lg font-semibold mb-3 hover:text-blue-400 transition-colors"
+        >
+          <span>Content Filters</span>
+          <span className="text-sm">{contentFiltersExpanded ? '▼' : '▶'}</span>
+        </button>
+        {contentFiltersExpanded && (
+          <>
+            <div className="flex gap-1.5 mb-3">
               <button
-                key={cluster.id}
-                onClick={() => onToggleCluster(cluster.id)}
-                className={`px-3 py-1 rounded-full font-medium transition-colors ${
-                  isEnabled
-                    ? 'bg-blue-600 text-white hover:bg-blue-700'
-                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                }`}
-                style={{ fontSize: '10px' }}
-                title={`${cluster.tagCount} tags: ${cluster.exemplars.join(', ')}`}
+                onClick={() => {
+                  tagClusters.forEach(cluster => {
+                    if (!enabledClusterIds.has(cluster.id)) {
+                      onToggleCluster(cluster.id);
+                    }
+                  });
+                }}
+                className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                style={{ fontSize: '9px' }}
               >
-                {cluster.name}
+                Select All
               </button>
-            );
-          })}
-        </div>
+              <button
+                onClick={() => {
+                  tagClusters.forEach(cluster => {
+                    if (enabledClusterIds.has(cluster.id)) {
+                      onToggleCluster(cluster.id);
+                    }
+                  });
+                }}
+                className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                style={{ fontSize: '9px' }}
+              >
+                Deselect All
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {tagClusters.map((cluster) => {
+                const isEnabled = enabledClusterIds.has(cluster.id);
+                return (
+                  <button
+                    key={cluster.id}
+                    onClick={() => onToggleCluster(cluster.id)}
+                    className={`px-3 py-1 rounded-full font-medium transition-colors ${
+                      isEnabled
+                        ? 'bg-blue-600 text-white hover:bg-blue-700'
+                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                    }`}
+                    style={{ fontSize: '10px' }}
+                    title={`${cluster.tagCount} tags: ${cluster.exemplars.join(', ')}`}
+                  >
+                    {cluster.name}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Categories */}
-      {stats && (
-        <div className="p-4 flex-1 overflow-y-auto">
+        {/* Categories */}
+        {stats && (
+          <div className="p-4">
           <button
             onClick={() => setCategoriesExpanded(!categoriesExpanded)}
             className="w-full flex items-center justify-between text-lg font-semibold mb-3 hover:text-blue-400 transition-colors"
@@ -237,29 +417,62 @@ export default function Sidebar({
             <span className="text-sm">{categoriesExpanded ? '▼' : '▶'}</span>
           </button>
           {categoriesExpanded && (
-            <div className="space-y-2">
-              {stats.categories.slice(0, 10).map((cat) => (
-                <div
-                  key={cat.category}
-                  className="flex justify-between items-center bg-gray-700 rounded px-3 py-2 text-sm"
+            <>
+              <div className="flex gap-1.5 mb-3">
+                <button
+                  onClick={() => {
+                    stats.categories.forEach(cat => {
+                      if (!enabledCategories.has(cat.category)) {
+                        onToggleCategory(cat.category);
+                      }
+                    });
+                  }}
+                  className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                  style={{ fontSize: '9px' }}
                 >
-                  <span className="text-gray-300 capitalize">
-                    {cat.category.replace(/_/g, ' ')}
-                  </span>
-                  <span className="font-mono text-xs text-gray-400">
-                    {cat.count}
-                  </span>
-                </div>
-              ))}
-            </div>
+                  Select All
+                </button>
+                <button
+                  onClick={() => {
+                    stats.categories.forEach(cat => {
+                      if (enabledCategories.has(cat.category)) {
+                        onToggleCategory(cat.category);
+                      }
+                    });
+                  }}
+                  className="px-1.5 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                  style={{ fontSize: '9px' }}
+                >
+                  Deselect All
+                </button>
+              </div>
+              <div className="space-y-2">
+                {stats.categories.slice(0, 10).map((cat) => {
+                  const isEnabled = enabledCategories.has(cat.category);
+                  return (
+                    <button
+                      key={cat.category}
+                      onClick={() => onToggleCategory(cat.category)}
+                      className={`w-full flex justify-between items-center rounded px-3 py-2 text-sm transition-colors ${
+                        isEnabled
+                          ? 'bg-blue-600 text-white hover:bg-blue-700'
+                          : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                      }`}
+                    >
+                      <span className="capitalize">
+                        {cat.category.replace(/_/g, ' ')}
+                      </span>
+                      <span className="font-mono text-xs">
+                        {cat.count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
           )}
-        </div>
-      )}
-
-      {/* Footer */}
-      <div className="p-4 border-t border-gray-700 text-xs text-gray-500">
-        <p>Click nodes to explore relationships</p>
-        <p className="mt-1">Scroll to zoom • Drag to pan</p>
+          </div>
+        )}
       </div>
     </div>
   );

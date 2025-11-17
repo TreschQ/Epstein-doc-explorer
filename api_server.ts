@@ -121,6 +121,69 @@ function validateClusterIds(clusters: any): number[] {
     .slice(0, 50); // Limit to 50 clusters max
 }
 
+function validateCategories(categories: any): string[] {
+  if (!categories) return [];
+  return String(categories)
+    .split(',')
+    .map(c => c.trim())
+    .filter(c => c.length > 0 && c.length < 100) // Reasonable category name length
+    .slice(0, 50); // Limit to 50 categories max
+}
+
+function validateYearRange(yearMin: any, yearMax: any): [number, number] | null {
+  if (!yearMin && !yearMax) return null; // No year filter
+
+  const min = parseInt(yearMin);
+  const max = parseInt(yearMax);
+
+  if (isNaN(min) || isNaN(max)) return null;
+  if (min < 1970 || max > 2025 || min > max) return null;
+
+  return [min, max];
+}
+
+function validateKeywords(keywords: any): string[] {
+  if (!keywords) return [];
+  return String(keywords)
+    .split(',')
+    .map(k => k.trim().toLowerCase())
+    .filter(k => k.length > 0 && k.length < 100) // Reasonable keyword length
+    .slice(0, 20); // Limit to 20 keywords max
+}
+
+// BM25 scoring function for fuzzy text matching
+function calculateBM25Score(text: string, keywords: string[]): number {
+  if (!text || keywords.length === 0) return 0;
+
+  const textLower = text.toLowerCase();
+  const words = textLower.split(/\s+/);
+  const docLength = words.length;
+  const avgDocLength = 100; // Approximate average document length
+
+  // BM25 parameters
+  const k1 = 1.2; // Term frequency saturation parameter
+  const b = 0.75; // Length normalization parameter
+
+  let score = 0;
+
+  keywords.forEach(keyword => {
+    // Count term frequency in document
+    const tf = words.filter(word => word.includes(keyword)).length;
+    if (tf === 0) return;
+
+    // Simplified IDF (inverse document frequency) - assume keyword appears in 10% of docs
+    const idf = Math.log(10);
+
+    // BM25 formula
+    const numerator = tf * (k1 + 1);
+    const denominator = tf + k1 * (1 - b + b * (docLength / avgDocLength));
+
+    score += idf * (numerator / denominator);
+  });
+
+  return score;
+}
+
 // No longer needed - we use the materialized top_cluster_ids column instead
 
 // Get all relationships (edges) with distance-based pruning
@@ -128,10 +191,37 @@ app.get('/api/relationships', (req, res) => {
   try {
     const limit = validateLimit(req.query.limit);
     const clusterIds = validateClusterIds(req.query.clusters);
+    const categories = validateCategories(req.query.categories);
+    const yearRange = validateYearRange(req.query.yearMin, req.query.yearMax);
+    const includeUndated = req.query.includeUndated !== 'false'; // Default to true
+    const keywords = validateKeywords(req.query.keywords);
     const EPSTEIN_NAME = 'Jeffrey Epstein';
 
     // Build set of selected cluster IDs for filtering
     const selectedClusterIds = new Set<number>(clusterIds);
+    const selectedCategories = new Set<string>(categories);
+
+    // Build WHERE clause for categories
+    let categoryWhere = '';
+    let categoryParams: string[] = [];
+    if (selectedCategories.size > 0) {
+      const placeholders = Array.from(selectedCategories).map(() => '?').join(',');
+      categoryWhere = `AND d.category IN (${placeholders})`;
+      categoryParams = Array.from(selectedCategories);
+    }
+
+    // Build WHERE clause for year range
+    let yearWhere = '';
+    let yearParams: string[] = [];
+    if (yearRange) {
+      const [minYear, maxYear] = yearRange;
+      if (includeUndated) {
+        yearWhere = `AND (rt.timestamp IS NULL OR (CAST(substr(rt.timestamp, 1, 4) AS INTEGER) >= ? AND CAST(substr(rt.timestamp, 1, 4) AS INTEGER) <= ?))`;
+      } else {
+        yearWhere = `AND (rt.timestamp IS NOT NULL AND CAST(substr(rt.timestamp, 1, 4) AS INTEGER) >= ? AND CAST(substr(rt.timestamp, 1, 4) AS INTEGER) <= ?)`;
+      }
+      yearParams = [minYear.toString(), maxYear.toString()];
+    }
 
     // Fetch relationships with alias resolution and triple_tags
     // Apply database-level LIMIT to prevent memory exhaustion
@@ -150,10 +240,13 @@ app.get('/api/relationships', (req, res) => {
       FROM rdf_triples rt
       LEFT JOIN entity_aliases ea_actor ON rt.actor = ea_actor.original_name
       LEFT JOIN entity_aliases ea_target ON rt.target = ea_target.original_name
-      WHERE rt.timestamp IS NULL OR rt.timestamp >= '1970-01-01'
+      LEFT JOIN documents d ON rt.doc_id = d.doc_id
+      WHERE (rt.timestamp IS NULL OR rt.timestamp >= '1970-01-01')
+      ${categoryWhere}
+      ${yearWhere}
       ORDER BY rt.timestamp
       LIMIT ?
-    `).all(MAX_DB_LIMIT) as Array<{
+    `).all(...categoryParams, ...yearParams, MAX_DB_LIMIT) as Array<{
       id: number;
       doc_id: string;
       timestamp: string | null;
@@ -166,7 +259,7 @@ app.get('/api/relationships', (req, res) => {
     }>;
 
     // Filter by tag clusters if specified
-    const filteredRelationships = allRelationships.filter(rel => {
+    let filteredRelationships = allRelationships.filter(rel => {
       if (selectedClusterIds.size === 0) return true; // No filter
 
       try {
@@ -178,6 +271,17 @@ app.get('/api/relationships', (req, res) => {
         return false;
       }
     });
+
+    // Filter by keywords using BM25 fuzzy matching if specified
+    if (keywords.length > 0) {
+      filteredRelationships = filteredRelationships.filter(rel => {
+        // Build searchable text from relationship fields
+        const searchText = `${rel.actor} ${rel.action} ${rel.target} ${rel.location || ''}`;
+        const score = calculateBM25Score(searchText, keywords);
+        // Include relationships with non-zero BM25 score (at least one keyword match)
+        return score > 0;
+      });
+    }
 
     // Build adjacency list for BFS
     const adjacency = new Map<string, Set<string>>();
@@ -256,9 +360,14 @@ app.get('/api/actor/:name/relationships', (req, res) => {
     }
 
     const clusterIds = validateClusterIds(req.query.clusters);
+    const categories = validateCategories(req.query.categories);
+    const yearRange = validateYearRange(req.query.yearMin, req.query.yearMax);
+    const includeUndated = req.query.includeUndated !== 'false'; // Default to true
+    const keywords = validateKeywords(req.query.keywords);
 
-    // Build set of selected cluster IDs for filtering
+    // Build set of selected cluster IDs and categories for filtering
     const selectedClusterIds = new Set<number>(clusterIds);
+    const selectedCategories = new Set<string>(categories);
 
     // Find all aliases for this name (if it's a canonical name)
     // OR find the canonical name if this is an alias
@@ -272,6 +381,36 @@ app.get('/api/actor/:name/relationships', (req, res) => {
 
     const allNames = aliasQuery.map((row: any) => row.original_name || row.canonical_name || row.name);
     const placeholders = allNames.map(() => '?').join(',');
+
+    // First, get the total count WITHOUT any filters (for the "X of Y" display)
+    const totalRelationships = db.prepare(`
+      SELECT COUNT(*) as count
+      FROM rdf_triples rt
+      WHERE (rt.actor IN (${placeholders}) OR rt.target IN (${placeholders}))
+        AND (rt.timestamp IS NULL OR rt.timestamp >= '1970-01-01')
+    `).get(...allNames, ...allNames) as { count: number };
+
+    // Build WHERE clause for categories
+    let categoryWhere = '';
+    let categoryParams: string[] = [];
+    if (selectedCategories.size > 0) {
+      const catPlaceholders = Array.from(selectedCategories).map(() => '?').join(',');
+      categoryWhere = `AND d.category IN (${catPlaceholders})`;
+      categoryParams = Array.from(selectedCategories);
+    }
+
+    // Build WHERE clause for year range
+    let yearWhere = '';
+    let yearParams: string[] = [];
+    if (yearRange) {
+      const [minYear, maxYear] = yearRange;
+      if (includeUndated) {
+        yearWhere = `AND (rt.timestamp IS NULL OR (CAST(substr(rt.timestamp, 1, 4) AS INTEGER) >= ? AND CAST(substr(rt.timestamp, 1, 4) AS INTEGER) <= ?))`;
+      } else {
+        yearWhere = `AND (rt.timestamp IS NOT NULL AND CAST(substr(rt.timestamp, 1, 4) AS INTEGER) >= ? AND CAST(substr(rt.timestamp, 1, 4) AS INTEGER) <= ?)`;
+      }
+      yearParams = [minYear.toString(), maxYear.toString()];
+    }
 
     const allRelationships = db.prepare(`
       SELECT
@@ -287,10 +426,13 @@ app.get('/api/actor/:name/relationships', (req, res) => {
       FROM rdf_triples rt
       LEFT JOIN entity_aliases ea_actor ON rt.actor = ea_actor.original_name
       LEFT JOIN entity_aliases ea_target ON rt.target = ea_target.original_name
+      LEFT JOIN documents d ON rt.doc_id = d.doc_id
       WHERE (rt.actor IN (${placeholders}) OR rt.target IN (${placeholders}))
         AND (rt.timestamp IS NULL OR rt.timestamp >= '1970-01-01')
+        ${categoryWhere}
+        ${yearWhere}
       ORDER BY rt.timestamp
-    `).all(...allNames, ...allNames) as Array<{
+    `).all(...allNames, ...allNames, ...categoryParams, ...yearParams) as Array<{
       id: number;
       doc_id: string;
       timestamp: string | null;
@@ -303,7 +445,7 @@ app.get('/api/actor/:name/relationships', (req, res) => {
     }>;
 
     // Filter by tag clusters if specified
-    const filteredRelationships = allRelationships.filter(rel => {
+    let filteredRelationships = allRelationships.filter(rel => {
       if (selectedClusterIds.size === 0) return true; // No filter
 
       try {
@@ -315,6 +457,17 @@ app.get('/api/actor/:name/relationships', (req, res) => {
         return false;
       }
     });
+
+    // Filter by keywords using BM25 fuzzy matching if specified
+    if (keywords.length > 0) {
+      filteredRelationships = filteredRelationships.filter(rel => {
+        // Build searchable text from relationship fields
+        const searchText = `${rel.actor} ${rel.action} ${rel.target} ${rel.location || ''}`;
+        const score = calculateBM25Score(searchText, keywords);
+        // Include relationships with non-zero BM25 score (at least one keyword match)
+        return score > 0;
+      });
+    }
 
     const relationships = filteredRelationships.map((rel) => ({
       id: rel.id,
@@ -329,7 +482,7 @@ app.get('/api/actor/:name/relationships', (req, res) => {
 
     res.json({
       relationships,
-      totalBeforeFilter: allRelationships.length
+      totalBeforeFilter: totalRelationships.count
     });
   } catch (error) {
     console.error('Error in /api/actor/:name/relationships:', error);

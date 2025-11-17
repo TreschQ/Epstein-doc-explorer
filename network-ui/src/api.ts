@@ -16,20 +16,42 @@ export async function fetchTagClusters(): Promise<TagCluster[]> {
   return response.json();
 }
 
-export async function fetchRelationships(limit: number = 500, clusterIds: number[] = []): Promise<{ relationships: Relationship[], totalBeforeLimit: number, totalBeforeFilter: number }> {
+export async function fetchRelationships(limit: number = 500, clusterIds: number[] = [], categories: string[] = [], yearRange?: [number, number], includeUndated: boolean = true, keywords: string = ''): Promise<{ relationships: Relationship[], totalBeforeLimit: number, totalBeforeFilter: number }> {
   const params = new URLSearchParams({ limit: limit.toString() });
   if (clusterIds.length > 0) {
     params.append('clusters', clusterIds.join(','));
+  }
+  if (categories.length > 0) {
+    params.append('categories', categories.join(','));
+  }
+  if (yearRange) {
+    params.append('yearMin', yearRange[0].toString());
+    params.append('yearMax', yearRange[1].toString());
+  }
+  params.append('includeUndated', includeUndated.toString());
+  if (keywords.trim()) {
+    params.append('keywords', keywords.trim());
   }
   const response = await fetch(`${API_BASE}/relationships?${params}`);
   if (!response.ok) throw new Error('Failed to fetch relationships');
   return response.json();
 }
 
-export async function fetchActorRelationships(name: string, clusterIds: number[] = []): Promise<{ relationships: Relationship[], totalBeforeFilter: number }> {
+export async function fetchActorRelationships(name: string, clusterIds: number[] = [], categories: string[] = [], yearRange?: [number, number], includeUndated: boolean = true, keywords: string = ''): Promise<{ relationships: Relationship[], totalBeforeFilter: number }> {
   const params = new URLSearchParams();
   if (clusterIds.length > 0) {
     params.append('clusters', clusterIds.join(','));
+  }
+  if (categories.length > 0) {
+    params.append('categories', categories.join(','));
+  }
+  if (yearRange) {
+    params.append('yearMin', yearRange[0].toString());
+    params.append('yearMax', yearRange[1].toString());
+  }
+  params.append('includeUndated', includeUndated.toString());
+  if (keywords.trim()) {
+    params.append('keywords', keywords.trim());
   }
   const url = `${API_BASE}/actor/${encodeURIComponent(name)}/relationships${params.toString() ? '?' + params : ''}`;
   const response = await fetch(url);

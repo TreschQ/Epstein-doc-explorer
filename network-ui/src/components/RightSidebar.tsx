@@ -8,9 +8,10 @@ interface RightSidebarProps {
   relationships: Relationship[];
   totalRelationships: number;
   onClose: () => void;
+  yearRange: [number, number];
 }
 
-export default function RightSidebar({ selectedActor, relationships, totalRelationships, onClose }: RightSidebarProps) {
+export default function RightSidebar({ selectedActor, relationships, totalRelationships, onClose, yearRange }: RightSidebarProps) {
   const [expandedTripleId, setExpandedTripleId] = useState<number | null>(null);
   const [documentToView, setDocumentToView] = useState<string | null>(null);
   const [documentCache, setDocumentCache] = useState<Map<string, Document>>(new Map());
@@ -89,7 +90,10 @@ export default function RightSidebar({ selectedActor, relationships, totalRelati
         <div className="p-4 border-b border-gray-700">
           <div className="flex justify-between items-start mb-3">
             <div>
-              <h2 className="text-lg font-semibold text-blue-400">Timeline</h2>
+              <div className="flex items-baseline gap-2">
+                <h2 className="text-lg font-semibold text-blue-400">Timeline</h2>
+                <span className="text-xs text-gray-500">({yearRange[0]} - {yearRange[1]})</span>
+              </div>
               <p className="text-sm text-gray-400">{selectedActor}</p>
               <p className="text-xs text-gray-500 mt-1">
                 Showing {sortedRelationships.length} of {totalRelationships} relationships

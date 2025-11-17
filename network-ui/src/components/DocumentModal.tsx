@@ -25,6 +25,15 @@ export default function DocumentModal({ docId, highlightTerm, secondaryHighlight
   const contentRef = useRef<HTMLDivElement>(null);
   const matchRefs = useRef<Map<number, HTMLElement>>(new Map());
 
+  // Common words to exclude from highlighting
+  const commonWords = new Set([
+    'the', 'and', 'or', 'to', 'from', 'in', 'on', 'at', 'by', 'for', 'with',
+    'about', 'as', 'into', 'through', 'during', 'before', 'after', 'above',
+    'below', 'between', 'under', 'since', 'without', 'within', 'of', 'off',
+    'out', 'over', 'up', 'down', 'near', 'along', 'among', 'across', 'behind',
+    'beyond', 'plus', 'except', 'but', 'per', 'via', 'upon', 'against'
+  ]);
+
   useEffect(() => {
     const loadDocument = async () => {
       setLoading(true);
@@ -64,7 +73,7 @@ export default function DocumentModal({ docId, highlightTerm, secondaryHighlight
       primaryPatterns.push(highlightTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
       // Add individual words (min 3 chars, excluding common words)
       highlightTerm.split(/\s+/).forEach(word => {
-        if (word.length >= 3 && word.toLowerCase() !== 'the') {
+        if (word.length >= 3 && !commonWords.has(word.toLowerCase())) {
           primaryPatterns.push(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         }
       });
@@ -75,7 +84,7 @@ export default function DocumentModal({ docId, highlightTerm, secondaryHighlight
       secondaryPatterns.push(secondaryHighlightTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
       // Add individual words (min 3 chars, excluding common words)
       secondaryHighlightTerm.split(/\s+/).forEach(word => {
-        if (word.length >= 3 && word.toLowerCase() !== 'the') {
+        if (word.length >= 3 && !commonWords.has(word.toLowerCase())) {
           secondaryPatterns.push(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         }
       });
@@ -137,7 +146,7 @@ export default function DocumentModal({ docId, highlightTerm, secondaryHighlight
         patterns.push(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         // Add individual words (min 3 chars, excluding common words)
         term.split(/\s+/).forEach(word => {
-          if (word.length >= 3 && word.toLowerCase() !== 'the') {
+          if (word.length >= 3 && !commonWords.has(word.toLowerCase())) {
             primaryWords.add(word.toLowerCase());
             patterns.push(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
           }
@@ -149,7 +158,7 @@ export default function DocumentModal({ docId, highlightTerm, secondaryHighlight
         patterns.push(secondaryTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         // Add individual words (min 3 chars, excluding common words)
         secondaryTerm.split(/\s+/).forEach(word => {
-          if (word.length >= 3 && word.toLowerCase() !== 'the') {
+          if (word.length >= 3 && !commonWords.has(word.toLowerCase())) {
             secondaryWords.add(word.toLowerCase());
             patterns.push(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
           }

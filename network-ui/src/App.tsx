@@ -21,6 +21,10 @@ function App() {
   const [actorTotalBeforeFilter, setActorTotalBeforeFilter] = useState<number>(0);
   const [limit, setLimit] = useState(isMobile ? 5000 : 15000);
   const [enabledClusterIds, setEnabledClusterIds] = useState<Set<number>>(new Set());
+  const [enabledCategories, setEnabledCategories] = useState<Set<string>>(new Set());
+  const [yearRange, setYearRange] = useState<[number, number]>([1980, 2025]);
+  const [includeUndated, setIncludeUndated] = useState(true);
+  const [keywords, setKeywords] = useState('');
   const [showWelcome, setShowWelcome] = useState(() => {
     // Check if user has seen the welcome message before
     return !localStorage.getItem('hasSeenWelcome');
@@ -41,20 +45,29 @@ function App() {
     loadTagClusters();
   }, []);
 
-  // Load data when limit or enabled clusters change (but only after clusters are loaded)
+  // Initialize enabled categories when stats are loaded
+  useEffect(() => {
+    if (stats && enabledCategories.size === 0) {
+      // Enable all categories by default
+      setEnabledCategories(new Set(stats.categories.map(c => c.category)));
+    }
+  }, [stats]);
+
+  // Load data when limit, enabled clusters, enabled categories, year range, includeUndated, or keywords change (but only after clusters are loaded)
   useEffect(() => {
     if (tagClusters.length > 0) {
       loadData();
     }
-  }, [limit, enabledClusterIds, tagClusters.length]);
+  }, [limit, enabledClusterIds, enabledCategories, yearRange, includeUndated, keywords, tagClusters.length]);
 
   const loadData = async () => {
     try {
       setLoading(true);
       const clusterIds = Array.from(enabledClusterIds);
+      const categories = Array.from(enabledCategories);
       const [statsData, relationshipsResponse] = await Promise.all([
         fetchStats(),
-        fetchRelationships(limit, clusterIds)
+        fetchRelationships(limit, clusterIds, categories, yearRange, includeUndated, keywords)
       ]);
       setStats(statsData);
       setRelationships(relationshipsResponse.relationships);
@@ -83,13 +96,26 @@ function App() {
     });
   }, []);
 
+  // Toggle category
+  const toggleCategory = useCallback((category: string) => {
+    setEnabledCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(category)) {
+        next.delete(category);
+      } else {
+        next.add(category);
+      }
+      return next;
+    });
+  }, []);
+
   // Handle closing welcome modal
   const handleCloseWelcome = useCallback(() => {
     localStorage.setItem('hasSeenWelcome', 'true');
     setShowWelcome(false);
   }, []);
 
-  // Fetch actor-specific relationships when an actor is selected or clusters change
+  // Fetch actor-specific relationships when an actor is selected or clusters/categories/year range/includeUndated/keywords change
   useEffect(() => {
     if (!selectedActor) {
       setActorRelationships([]);
@@ -100,7 +126,8 @@ function App() {
     const loadActorRelationships = async () => {
       try {
         const clusterIds = Array.from(enabledClusterIds);
-        const response = await fetchActorRelationships(selectedActor, clusterIds);
+        const categories = Array.from(enabledCategories);
+        const response = await fetchActorRelationships(selectedActor, clusterIds, categories, yearRange, includeUndated, keywords);
         setActorRelationships(response.relationships);
         setActorTotalBeforeFilter(response.totalBeforeFilter);
       } catch (error) {
@@ -111,7 +138,7 @@ function App() {
     };
 
     loadActorRelationships();
-  }, [selectedActor, enabledClusterIds]);
+  }, [selectedActor, enabledClusterIds, enabledCategories, yearRange, includeUndated, keywords]);
 
   return (
     <div className="flex h-screen bg-gray-900 text-white">
@@ -126,6 +153,14 @@ function App() {
           tagClusters={tagClusters}
           enabledClusterIds={enabledClusterIds}
           onToggleCluster={toggleCluster}
+          enabledCategories={enabledCategories}
+          onToggleCategory={toggleCategory}
+          yearRange={yearRange}
+          onYearRangeChange={setYearRange}
+          includeUndated={includeUndated}
+          onIncludeUndatedChange={setIncludeUndated}
+          keywords={keywords}
+          onKeywordsChange={setKeywords}
         />
       </div>
 
@@ -155,6 +190,7 @@ function App() {
             relationships={actorRelationships}
             totalRelationships={actorTotalBeforeFilter}
             onClose={() => setSelectedActor(null)}
+            yearRange={yearRange}
           />
         </div>
       )}
@@ -170,6 +206,8 @@ function App() {
           tagClusters={tagClusters}
           enabledClusterIds={enabledClusterIds}
           onToggleCluster={toggleCluster}
+          enabledCategories={enabledCategories}
+          onToggleCategory={toggleCategory}
           relationships={selectedActor ? actorRelationships : relationships}
         />
       </div>

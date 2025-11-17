@@ -384,9 +384,19 @@ export default function NetworkGraph({
 
 
   return (
-    <svg
-      ref={svgRef}
-      className="w-full h-full bg-gray-950"
-    />
+    <div className="relative w-full h-full">
+      <svg
+        ref={svgRef}
+        className="w-full h-full bg-gray-950"
+      />
+      {/* Instructions Overlay Banner */}
+      <div className="absolute bottom-0 left-0 right-0 bg-gray-900/50 backdrop-blur-sm px-4 py-2 text-xs text-gray-300 text-center">
+        <span>Click nodes to explore relationships</span>
+        <span className="mx-3">•</span>
+        <span>Scroll to zoom</span>
+        <span className="mx-3">•</span>
+        <span>Drag to pan</span>
+      </div>
+    </div>
   );
 }
