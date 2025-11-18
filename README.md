@@ -11,6 +11,8 @@ This project analyzes the Epstein document corpus to extract structured informat
 **Live Demo:** [Deployed on Render](https://epstein-doc-explorer-1.onrender.com/)
 
 Source documents are available here: https://drive.google.com/drive/folders/1ldncvdqIf6miiskDp_EDuGSDAaI_fJx8
+and here: https://huggingface.co/datasets/tensonaut/EPSTEIN_FILES_20K/tree/main
+**special thanks to u/tensonaut for extracting the image files with tesseract!**
 
 ---
 
