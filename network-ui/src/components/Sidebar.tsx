@@ -52,7 +52,7 @@ export default function Sidebar({
   const [isSearching, setIsSearching] = useState(false);
   const [categoriesExpanded, setCategoriesExpanded] = useState(false);
   const [contentFiltersExpanded, setContentFiltersExpanded] = useState(false);
-  const [graphSettingsExpanded, setGraphSettingsExpanded] = useState(true);
+  const [graphSettingsExpanded, setGraphSettingsExpanded] = useState(false);
   const [filtersExpanded, setFiltersExpanded] = useState(true);
   const [localYearRange, setLocalYearRange] = useState<[number, number]>(yearRange);
   const [localLimit, setLocalLimit] = useState(limit);
@@ -233,13 +233,13 @@ export default function Sidebar({
         </div>
       )}
 
-      {/* Controls Accordion */}
-      <div className="border-b border-gray-700 flex-shrink-0">
+      {/* Controls Accordion - Scrollable */}
+      <div className="flex-1 overflow-y-auto">
         {/* Graph Settings Section */}
         <div className="p-4 border-b border-gray-700">
           <button
             onClick={() => setGraphSettingsExpanded(!graphSettingsExpanded)}
-            className="w-full flex items-center justify-between text-lg font-semibold mb-3 hover:text-blue-400 transition-colors"
+            className="w-full flex items-center justify-between text-base font-semibold mb-3 hover:text-blue-400 transition-colors"
           >
             <span>Graph Settings</span>
             <span className="text-sm">{graphSettingsExpanded ? '▼' : '▶'}</span>
@@ -319,10 +319,10 @@ export default function Sidebar({
         </div>
 
         {/* Filters Section */}
-        <div className="p-4">
+        <div className="p-4 border-b border-gray-700">
           <button
             onClick={() => setFiltersExpanded(!filtersExpanded)}
-            className="w-full flex items-center justify-between text-lg font-semibold mb-3 hover:text-blue-400 transition-colors"
+            className="w-full flex items-center justify-between text-base font-semibold mb-3 hover:text-blue-400 transition-colors"
           >
             <span>Filters</span>
             <span className="text-sm">{filtersExpanded ? '▼' : '▶'}</span>
@@ -480,15 +480,12 @@ export default function Sidebar({
             </>
           )}
         </div>
-      </div>
 
-      {/* Scrollable Filters Container */}
-      <div className="flex-1 overflow-y-auto">
         {/* Tag Cluster Filters */}
         <div className="p-4 border-b border-gray-700">
         <button
           onClick={() => setContentFiltersExpanded(!contentFiltersExpanded)}
-          className="w-full flex items-center justify-between text-lg font-semibold mb-3 hover:text-blue-400 transition-colors"
+          className="w-full flex items-center justify-between text-base font-semibold mb-3 hover:text-blue-400 transition-colors"
         >
           <span>Content Tags</span>
           <span className="text-sm">{contentFiltersExpanded ? '▼' : '▶'}</span>
@@ -552,7 +549,7 @@ export default function Sidebar({
           <div className="p-4">
           <button
             onClick={() => setCategoriesExpanded(!categoriesExpanded)}
-            className="w-full flex items-center justify-between text-lg font-semibold mb-3 hover:text-blue-400 transition-colors"
+            className="w-full flex items-center justify-between text-base font-semibold mb-3 hover:text-blue-400 transition-colors"
           >
             <span>Document Categories</span>
             <span className="text-sm">{categoriesExpanded ? '▼' : '▶'}</span>
