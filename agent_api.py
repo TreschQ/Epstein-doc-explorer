@@ -14,7 +14,7 @@ from typing import Annotated, Sequence, TypedDict
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -42,13 +42,39 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Origines autorisées (frontend uniquement)
+ALLOWED_ORIGINS = [
+    # Production
+    "https://epstein-front.vercel.app",
+    # Ajoute ton domaine custom si tu en as un
+]
+
+# En dev local, autoriser localhost
+if os.environ.get("ENV", "production") == "development":
+    ALLOWED_ORIGINS.extend([
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+    ])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # À restreindre en production
+    allow_origins=ALLOWED_ORIGINS,
+    # Regex pour autoriser toutes les previews Vercel du projet
+    allow_origin_regex=r"https://epstein-front.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
+
+# API Key pour sécuriser les endpoints
+API_KEY = os.environ.get("API_KEY")
+
+async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Vérifie la clé API si elle est configurée."""
+    if API_KEY and x_api_key != API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+    return x_api_key
 
 # ============== LangChain Tools ==============
 
@@ -308,7 +334,7 @@ async def get_stats():
 
 
 @app.post("/api/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key)):
     """
     Query the document corpus with an agentic approach.
     The agent will search, analyze, and synthesize information to answer the question.
@@ -362,7 +388,7 @@ async def query_documents(request: QueryRequest):
 
 
 @app.post("/api/query/stream")
-async def query_documents_stream(request: QueryRequest):
+async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_api_key)):
     """
     Stream the agent's response for real-time UI updates.
     Returns Server-Sent Events (SSE).
