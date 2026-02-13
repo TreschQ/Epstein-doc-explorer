@@ -284,14 +284,17 @@ async def get_stats():
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM documents")
-    total_docs = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) as count FROM documents")
+    row = cursor.fetchone()
+    total_docs = row["count"] if isinstance(row, dict) else row[0]
 
-    cursor.execute("SELECT COUNT(*) FROM rdf_triples")
-    total_rels = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) as count FROM rdf_triples")
+    row = cursor.fetchone()
+    total_rels = row["count"] if isinstance(row, dict) else row[0]
 
-    cursor.execute("SELECT COUNT(DISTINCT actor) FROM rdf_triples")
-    unique_actors = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT actor) as count FROM rdf_triples")
+    row = cursor.fetchone()
+    unique_actors = row["count"] if isinstance(row, dict) else row[0]
 
     stats = {
         "total_documents": total_docs,
