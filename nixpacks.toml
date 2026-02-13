@@ -2,10 +2,14 @@
 providers = ["python"]
 
 [phases.setup]
-nixPkgs = ["python311", "python311Packages.pip"]
+nixPkgs = ["python311", "python311Packages.pip", "python311Packages.virtualenv"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = [
+    "python -m venv /app/.venv",
+    "/app/.venv/bin/pip install --upgrade pip",
+    "/app/.venv/bin/pip install -r requirements.txt"
+]
 
 [start]
-cmd = "uvicorn agent_api:app --host 0.0.0.0 --port ${PORT:-8000}"
+cmd = "/app/.venv/bin/uvicorn agent_api:app --host 0.0.0.0 --port ${PORT:-8000}"
