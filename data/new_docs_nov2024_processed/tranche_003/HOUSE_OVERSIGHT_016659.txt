@@ -1,7 +1,0 @@
-LOCATION
-
-The Floridan Aquifer wells are not restricted with respect
-to specific location in that no other production wells exists
-today near the City's WIP.
-
-HOUSE_OVERSIGHT_016659

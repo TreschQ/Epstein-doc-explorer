@@ -1,7 +1,0 @@
-Is Invitation: No
-
-GUID: 910FCOCF-46F2-4AB9-9B5F-D02967A3CCF1
-
-Message: Is there anyone left
-
-HOUSE_OVERSIGHT_027706

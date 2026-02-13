@@ -1,7 +1,0 @@
-GUID: FA315842-44CE-4FB6-ABD1-OFA6EDC2A391
-
-Tr,
-
-Message: Good article for trump to see
-
-HOUSE_OVERSIGHT_027164

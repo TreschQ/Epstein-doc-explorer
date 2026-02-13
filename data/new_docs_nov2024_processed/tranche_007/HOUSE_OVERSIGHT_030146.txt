@@ -1,6 +1,0 @@
-Actions
-
-1. Signing the agreement (Payment method, successful fee)
-2. Program Launching
-
-HOUSE_OVERSIGHT_030146

@@ -1,8 +1,0 @@
-Applications under development
-
-¢ Mobile application for shoppers to ask questions about products and
-services — our Output will be based on opinion of people on social media.
-
-¢ Analyze and predict crime
-
-HOUSE_OVERSIGHT_028997

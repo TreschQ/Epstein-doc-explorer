@@ -1,9 +1,0 @@
-Flags: 1060865
-Is Read: Yes
-Is Invitation: No
-
-GUID: D6319952-7560-4F53-A182-D52B5267FB68
-
-Message: LOL! !!... true
-
-HOUSE_OVERSIGHT_027277

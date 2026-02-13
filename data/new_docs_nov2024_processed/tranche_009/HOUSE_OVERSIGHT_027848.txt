@@ -1,9 +1,0 @@
-Is Read: Yes
-
-Is Invitation: No
-
-GUID: DA66A681-A36A-46E8-AF72-OB091B2CE1F2
-
-Message: You r not coming in?
-
-HOUSE_OVERSIGHT_027848

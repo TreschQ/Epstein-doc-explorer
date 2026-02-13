@@ -1,6 +1,0 @@
-306 16 AGI Preschool
-
-dynamics to accord with the dynamics of various real-world systems; but, this tuning would be
-beneficial for the BlocksNBead World as well.
-
-HOUSE_OVERSIGHT_013222
