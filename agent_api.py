@@ -282,13 +282,24 @@ async def root():
 async def get_stats():
     """Get database statistics."""
     conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM documents")
+    total_docs = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM rdf_triples")
+    total_rels = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(DISTINCT actor) FROM rdf_triples")
+    unique_actors = cursor.fetchone()[0]
 
     stats = {
-        "total_documents": conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0],
-        "total_relationships": conn.execute("SELECT COUNT(*) FROM rdf_triples").fetchone()[0],
-        "unique_actors": conn.execute("SELECT COUNT(DISTINCT actor) FROM rdf_triples").fetchone()[0],
+        "total_documents": total_docs,
+        "total_relationships": total_rels,
+        "unique_actors": unique_actors,
     }
 
+    cursor.close()
     conn.close()
     return stats
 

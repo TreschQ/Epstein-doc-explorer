@@ -4,8 +4,12 @@ MCP Server for Epstein Document RAG.
 
 Provides semantic search + keyword search over the document corpus,
 with RAG capabilities for answering questions.
+
+Supports both SQLite (local dev) and PostgreSQL (production).
+Set DATABASE_URL environment variable to use PostgreSQL.
 """
 
+import os
 import sqlite3
 import json
 import numpy as np
@@ -14,8 +18,13 @@ from typing import Any
 from sentence_transformers import SentenceTransformer
 from mcp.server.fastmcp import FastMCP
 
-DB_PATH = Path(__file__).parent / "document_analysis.db"
+# Database configuration
+DATABASE_URL = os.environ.get("DATABASE_URL")
+SQLITE_PATH = Path(__file__).parent / "document_analysis.db"
 MODEL_NAME = "all-MiniLM-L6-v2"
+
+# PostgreSQL support (lazy import)
+_pg_pool = None
 
 # Initialize MCP server
 mcp = FastMCP("epstein-docs")
@@ -32,11 +41,29 @@ def get_model() -> SentenceTransformer:
     return _model
 
 
-def get_db() -> sqlite3.Connection:
-    """Get database connection."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+def get_db():
+    """Get database connection (SQLite or PostgreSQL)."""
+    if DATABASE_URL:
+        return _get_postgres_conn()
+    else:
+        conn = sqlite3.connect(SQLITE_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+
+def _get_postgres_conn():
+    """Get PostgreSQL connection."""
+    import psycopg2
+    import psycopg2.extras
+
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.cursor_factory = psycopg2.extras.RealDictCursor
     return conn
+
+
+def _is_postgres():
+    """Check if using PostgreSQL."""
+    return DATABASE_URL is not None
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -56,7 +83,8 @@ def semantic_search(query: str, limit: int = 10) -> list[dict]:
     query_embedding = model.encode([query])[0].astype(np.float32)
 
     # Get all document embeddings
-    cursor = conn.execute("""
+    cursor = conn.cursor()
+    cursor.execute("""
         SELECT e.doc_id, e.embedding, d.paragraph_summary, d.one_sentence_summary,
                d.category, d.date_range_earliest, d.date_range_latest
         FROM document_embeddings e
@@ -65,20 +93,30 @@ def semantic_search(query: str, limit: int = 10) -> list[dict]:
 
     results = []
     for row in cursor:
-        # Decode embedding from blob
-        doc_embedding = np.frombuffer(row["embedding"], dtype=np.float32)
+        # Handle both SQLite Row and PostgreSQL dict
+        if hasattr(row, 'keys'):
+            row_dict = dict(row)
+        else:
+            row_dict = row
+
+        # Decode embedding from blob/bytea
+        embedding_data = row_dict["embedding"]
+        if isinstance(embedding_data, memoryview):
+            embedding_data = bytes(embedding_data)
+        doc_embedding = np.frombuffer(embedding_data, dtype=np.float32)
         similarity = cosine_similarity(query_embedding, doc_embedding)
 
         results.append({
-            "doc_id": row["doc_id"],
+            "doc_id": row_dict["doc_id"],
             "similarity": similarity,
-            "summary": row["paragraph_summary"] or row["one_sentence_summary"],
-            "category": row["category"],
-            "date_range": f"{row['date_range_earliest'] or '?'} - {row['date_range_latest'] or '?'}"
+            "summary": row_dict["paragraph_summary"] or row_dict["one_sentence_summary"],
+            "category": row_dict["category"],
+            "date_range": f"{row_dict['date_range_earliest'] or '?'} - {row_dict['date_range_latest'] or '?'}"
         })
 
     # Sort by similarity and return top results
     results.sort(key=lambda x: x["similarity"], reverse=True)
+    cursor.close()
     conn.close()
 
     return results[:limit]
@@ -89,28 +127,43 @@ def keyword_search(keywords: list[str], limit: int = 10) -> list[dict]:
     Search documents by keywords in full text.
     """
     conn = get_db()
+    cursor = conn.cursor()
 
-    # Build search query
-    conditions = " AND ".join(["full_text LIKE ?" for _ in keywords])
-    params = [f"%{kw}%" for kw in keywords]
+    # Build search query - PostgreSQL uses ILIKE, SQLite uses LIKE
+    if _is_postgres():
+        conditions = " AND ".join(["full_text ILIKE %s" for _ in keywords])
+        params = [f"%{kw}%" for kw in keywords] + [limit]
+        query = f"""
+            SELECT doc_id, paragraph_summary, one_sentence_summary, category,
+                   date_range_earliest, date_range_latest
+            FROM documents
+            WHERE {conditions}
+            LIMIT %s
+        """
+    else:
+        conditions = " AND ".join(["full_text LIKE ?" for _ in keywords])
+        params = [f"%{kw}%" for kw in keywords] + [limit]
+        query = f"""
+            SELECT doc_id, paragraph_summary, one_sentence_summary, category,
+                   date_range_earliest, date_range_latest
+            FROM documents
+            WHERE {conditions}
+            LIMIT ?
+        """
 
-    cursor = conn.execute(f"""
-        SELECT doc_id, paragraph_summary, one_sentence_summary, category,
-               date_range_earliest, date_range_latest
-        FROM documents
-        WHERE {conditions}
-        LIMIT ?
-    """, params + [limit])
+    cursor.execute(query, params)
 
     results = []
     for row in cursor:
+        row_dict = dict(row) if hasattr(row, 'keys') else row
         results.append({
-            "doc_id": row["doc_id"],
-            "summary": row["paragraph_summary"] or row["one_sentence_summary"],
-            "category": row["category"],
-            "date_range": f"{row['date_range_earliest'] or '?'} - {row['date_range_latest'] or '?'}"
+            "doc_id": row_dict["doc_id"],
+            "summary": row_dict["paragraph_summary"] or row_dict["one_sentence_summary"],
+            "category": row_dict["category"],
+            "date_range": f"{row_dict['date_range_earliest'] or '?'} - {row_dict['date_range_latest'] or '?'}"
         })
 
+    cursor.close()
     conn.close()
     return results
 
@@ -118,39 +171,65 @@ def keyword_search(keywords: list[str], limit: int = 10) -> list[dict]:
 def get_document_text(doc_id: str) -> str | None:
     """Get full text of a document."""
     conn = get_db()
-    cursor = conn.execute("SELECT full_text FROM documents WHERE doc_id = ?", [doc_id])
+    cursor = conn.cursor()
+
+    if _is_postgres():
+        cursor.execute("SELECT full_text FROM documents WHERE doc_id = %s", [doc_id])
+    else:
+        cursor.execute("SELECT full_text FROM documents WHERE doc_id = ?", [doc_id])
+
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
-    return row["full_text"] if row else None
+
+    if row:
+        row_dict = dict(row) if hasattr(row, 'keys') else row
+        return row_dict["full_text"]
+    return None
 
 
 def get_relationships_for_actor(actor: str, limit: int = 50) -> list[dict]:
     """Get relationships involving an actor."""
     conn = get_db()
+    cursor = conn.cursor()
 
-    cursor = conn.execute("""
-        SELECT t.doc_id, t.timestamp, t.actor, t.action, t.target, t.location,
-               t.explicit_topic, t.implicit_topic
-        FROM rdf_triples t
-        LEFT JOIN entity_aliases a ON t.actor = a.original_name
-        WHERE t.actor LIKE ? OR t.target LIKE ?
-           OR a.canonical_name LIKE ?
-        ORDER BY t.timestamp
-        LIMIT ?
-    """, [f"%{actor}%", f"%{actor}%", f"%{actor}%", limit])
+    if _is_postgres():
+        cursor.execute("""
+            SELECT t.doc_id, t.timestamp, t.actor, t.action, t.target, t.location,
+                   t.explicit_topic, t.implicit_topic
+            FROM rdf_triples t
+            LEFT JOIN entity_aliases a ON t.actor = a.original_name
+            WHERE t.actor ILIKE %s OR t.target ILIKE %s
+               OR a.canonical_name ILIKE %s
+            ORDER BY t.timestamp
+            LIMIT %s
+        """, [f"%{actor}%", f"%{actor}%", f"%{actor}%", limit])
+    else:
+        cursor.execute("""
+            SELECT t.doc_id, t.timestamp, t.actor, t.action, t.target, t.location,
+                   t.explicit_topic, t.implicit_topic
+            FROM rdf_triples t
+            LEFT JOIN entity_aliases a ON t.actor = a.original_name
+            WHERE t.actor LIKE ? OR t.target LIKE ?
+               OR a.canonical_name LIKE ?
+            ORDER BY t.timestamp
+            LIMIT ?
+        """, [f"%{actor}%", f"%{actor}%", f"%{actor}%", limit])
 
     results = []
     for row in cursor:
+        row_dict = dict(row) if hasattr(row, 'keys') else row
         results.append({
-            "doc_id": row["doc_id"],
-            "timestamp": row["timestamp"],
-            "actor": row["actor"],
-            "action": row["action"],
-            "target": row["target"],
-            "location": row["location"],
-            "topic": row["explicit_topic"] or row["implicit_topic"]
+            "doc_id": row_dict["doc_id"],
+            "timestamp": row_dict["timestamp"],
+            "actor": row_dict["actor"],
+            "action": row_dict["action"],
+            "target": row_dict["target"],
+            "location": row_dict["location"],
+            "topic": row_dict["explicit_topic"] or row_dict["implicit_topic"]
         })
 
+    cursor.close()
     conn.close()
     return results
 
