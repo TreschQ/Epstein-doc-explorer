@@ -402,7 +402,21 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                 # Fin d'un appel d'outil
                 elif event_type == "on_tool_end":
                     tool_name = event.get("name", "unknown")
-                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name})}\n\n"
+                    tool_output = event.get("data", {}).get("output", "")
+
+                    # Extraire les sources (doc_id) du résultat
+                    sources = []
+                    try:
+                        if tool_output:
+                            parsed = json.loads(tool_output)
+                            if isinstance(parsed, list):
+                                for item in parsed:
+                                    if isinstance(item, dict) and "doc_id" in item:
+                                        sources.append(item["doc_id"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'sources': sources})}\n\n"
 
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
