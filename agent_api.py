@@ -162,16 +162,29 @@ def get_database_stats() -> str:
     Use this to understand the scope and content of the corpus.
     """
     conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM documents")
+    total_documents = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM rdf_triples")
+    total_relationships = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(DISTINCT actor) FROM rdf_triples")
+    unique_actors = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(DISTINCT target) FROM rdf_triples")
+    unique_targets = cursor.fetchone()[0]
 
     stats = {
-        "total_documents": conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0],
-        "total_relationships": conn.execute("SELECT COUNT(*) FROM rdf_triples").fetchone()[0],
-        "unique_actors": conn.execute("SELECT COUNT(DISTINCT actor) FROM rdf_triples").fetchone()[0],
-        "unique_targets": conn.execute("SELECT COUNT(DISTINCT target) FROM rdf_triples").fetchone()[0],
+        "total_documents": total_documents,
+        "total_relationships": total_relationships,
+        "unique_actors": unique_actors,
+        "unique_targets": unique_targets,
         "categories": [],
     }
 
-    cursor = conn.execute("""
+    cursor.execute("""
         SELECT category, COUNT(*) as count
         FROM documents
         GROUP BY category
@@ -180,6 +193,7 @@ def get_database_stats() -> str:
     """)
     stats["categories"] = [{"name": row[0], "count": row[1]} for row in cursor]
 
+    cursor.close()
     conn.close()
     return json.dumps(stats, indent=2, ensure_ascii=False)
 
