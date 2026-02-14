@@ -31,6 +31,7 @@ from mcp_server import (
     keyword_search,
     hybrid_search,
     get_document_text,
+    get_document_with_metadata,
     get_relationships_for_actor,
     get_db,
     DATABASE_URL,
@@ -207,29 +208,29 @@ model = ChatOpenAI(
     },
 ).bind_tools(tools)
 
-# System prompt pour guider l'agent
-SYSTEM_PROMPT = """Tu es un assistant expert dans l'analyse des documents Epstein.
-Tu as accès à une base de données contenant des milliers de documents judiciaires,
-emails, dépositions et autres pièces liées à l'affaire Jeffrey Epstein.
+# System prompt for the agent
+SYSTEM_PROMPT = """You are an expert assistant specialized in analyzing the Epstein documents.
+You have access to a database containing thousands of court documents, emails, depositions,
+and other materials related to the Jeffrey Epstein case.
 
-Tes capacités:
-- Recherche sémantique avec PGVector (recherche vectorielle rapide)
-- Recherche par mots-clés avec full-text search PostgreSQL
-- Recherche hybride combinant sémantique + mots-clés avec scoring MRR
-- Exploration des relations entre personnes (qui a fait quoi à qui)
-- Lecture du texte complet des documents
+Your capabilities:
+- Semantic search with PGVector (fast vector search)
+- Keyword search with PostgreSQL full-text search
+- Hybrid search combining semantic + keywords with MRR scoring
+- Exploring relationships between people (who did what to whom)
+- Reading full document text
 
 Instructions:
-1. Utilise les outils de recherche pour trouver les informations pertinentes
-2. Pour les questions thématiques, utilise search_documents (recherche sémantique)
-3. Pour les questions avec des termes spécifiques, utilise search_by_keywords
-4. Pour les meilleures résultats quand tu as à la fois un contexte et des mots-clés, utilise search_hybrid
-5. Pour les questions sur des personnes, utilise search_actor d'abord
-6. Cite toujours tes sources avec les doc_id
-7. Sois factuel et objectif - rapporte ce que disent les documents
-8. Si tu ne trouves pas d'information, dis-le clairement
+1. Use search tools to find relevant information
+2. For thematic questions, use search_documents (semantic search)
+3. For questions with specific terms, use search_by_keywords
+4. For best results when you have both context and keywords, use search_hybrid
+5. For questions about specific people, use search_actor first
+6. Always cite your sources with the doc_id
+7. Be factual and objective - report what the documents say
+8. If you cannot find information, say so clearly
 
-Réponds en français si la question est en français, sinon en anglais."""
+IMPORTANT: Always respond in the same language as the user's question. If the question is in French, respond in French. If in Spanish, respond in Spanish. Always match the user's language."""
 
 
 def agent_node(state: AgentState) -> dict:
@@ -292,10 +293,20 @@ class QueryRequest(BaseModel):
     session_id: str | None = None
 
 
+class SourceInfo(BaseModel):
+    doc_id: str
+    summary: str | None = None
+    category: str | None = None
+    date_range: str | None = None
+    score: float | None = None
+    full_text: str | None = None
+
+
 class QueryResponse(BaseModel):
     answer: str
-    sources: list[str]
+    sources: list[SourceInfo]
     tool_calls: list[dict]
+    conversation_title: str | None = None
 
 
 class StreamEvent(BaseModel):
@@ -325,6 +336,17 @@ class HybridSearchRequest(BaseModel):
 async def root():
     """Health check."""
     return {"status": "ok", "service": "Epstein Docs Agent API"}
+
+
+@app.get("/api/documents/{doc_id}")
+async def get_document_endpoint(doc_id: str, _: str = Depends(verify_api_key)):
+    """
+    Get a document by its ID with full text and metadata.
+    """
+    document = get_document_with_metadata(doc_id)
+    if document:
+        return document
+    raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
 
 
 @app.get("/api/stats")
@@ -420,7 +442,7 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
         # Extraire les informations de la réponse
         messages = result["messages"]
         final_answer = ""
-        sources = set()
+        sources_dict = {}  # Use dict to dedupe by doc_id
         tool_calls_info = []
 
         for msg in messages:
@@ -439,7 +461,22 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
                     if isinstance(content, list):
                         for item in content:
                             if isinstance(item, dict) and "doc_id" in item:
-                                sources.add(item["doc_id"])
+                                doc_id = item["doc_id"]
+                                if doc_id not in sources_dict:
+                                    # Get full document data
+                                    doc_data = get_document_with_metadata(doc_id)
+
+                                    # Get score from search result
+                                    score = item.get("similarity") or item.get("score") or item.get("rank")
+
+                                    sources_dict[doc_id] = SourceInfo(
+                                        doc_id=doc_id,
+                                        summary=item.get("summary"),
+                                        category=item.get("category"),
+                                        date_range=item.get("date_range"),
+                                        score=score,
+                                        full_text=doc_data.get("full_text") if doc_data else None,
+                                    )
                 except (json.JSONDecodeError, TypeError):
                     pass
 
@@ -447,10 +484,18 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
             if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
                 final_answer = msg.content
 
+        # Generate conversation title from question
+        question = request.question.strip()
+        if len(question) > 50:
+            conversation_title = question[:50].rsplit(' ', 1)[0] + "..."
+        else:
+            conversation_title = question
+
         return QueryResponse(
             answer=final_answer,
-            sources=list(sources),
+            sources=list(sources_dict.values()),
             tool_calls=tool_calls_info,
+            conversation_title=conversation_title,
         )
 
     except Exception as e:
@@ -491,21 +536,59 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                     tool_name = event.get("name", "unknown")
                     tool_output = event.get("data", {}).get("output", "")
 
-                    # Extraire les sources (doc_id) du résultat
+                    # Extract content from ToolMessage if needed
+                    if hasattr(tool_output, "content"):
+                        tool_output = tool_output.content
+
+                    # Extraire les sources avec métadonnées et texte complet
                     sources = []
+                    seen_doc_ids = set()
                     try:
-                        if tool_output:
+                        # Handle both string JSON and already parsed objects
+                        if isinstance(tool_output, str) and tool_output:
                             parsed = json.loads(tool_output)
-                            if isinstance(parsed, list):
-                                for item in parsed:
-                                    if isinstance(item, dict) and "doc_id" in item:
-                                        sources.append(item["doc_id"])
+                        else:
+                            parsed = tool_output
+
+                        if isinstance(parsed, list):
+                            for item in parsed:
+                                if isinstance(item, dict) and "doc_id" in item:
+                                    doc_id = item["doc_id"]
+                                    if doc_id in seen_doc_ids:
+                                        continue
+                                    seen_doc_ids.add(doc_id)
+
+                                    # Récupérer le document complet
+                                    doc_data = get_document_with_metadata(doc_id)
+
+                                    source_info = {
+                                        "doc_id": doc_id,
+                                        "summary": item.get("summary") or (doc_data.get("summary") if doc_data else None),
+                                        "category": item.get("category") or (doc_data.get("category") if doc_data else None),
+                                        "date_range": item.get("date_range") or (doc_data.get("date_range") if doc_data else None),
+                                        "full_text": doc_data.get("full_text") if doc_data else None,
+                                    }
+                                    # Ajouter le score si disponible
+                                    if "similarity" in item:
+                                        source_info["score"] = item["similarity"]
+                                    elif "score" in item:
+                                        source_info["score"] = item["score"]
+                                    elif "rank" in item:
+                                        source_info["score"] = item["rank"]
+                                    sources.append(source_info)
                     except (json.JSONDecodeError, TypeError):
                         pass
 
-                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'sources': sources})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'sources': sources}, ensure_ascii=False)}\n\n"
 
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+            # Generate conversation title from question
+            question = request.question.strip()
+            if len(question) > 50:
+                conversation_title = question[:50].rsplit(' ', 1)[0] + "..."
+            else:
+                conversation_title = question
+
+            yield f"data: {json.dumps({'type': 'done', 'conversation_title': conversation_title})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"

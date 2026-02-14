@@ -482,6 +482,43 @@ def get_document_text(doc_id: str) -> str | None:
     return None
 
 
+def get_document_with_metadata(doc_id: str) -> dict | None:
+    """Get full document with metadata."""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    if _is_postgres():
+        cursor.execute("""
+            SELECT doc_id, full_text, one_sentence_summary, paragraph_summary,
+                   category, date_range_earliest, date_range_latest, file_path
+            FROM documents WHERE doc_id = %s
+        """, [doc_id])
+    else:
+        cursor.execute("""
+            SELECT doc_id, full_text, one_sentence_summary, paragraph_summary,
+                   category, date_range_earliest, date_range_latest, file_path
+            FROM documents WHERE doc_id = ?
+        """, [doc_id])
+
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if row:
+        row_dict = dict(row) if hasattr(row, 'keys') else row
+        return {
+            "doc_id": row_dict["doc_id"],
+            "full_text": row_dict["full_text"],
+            "summary": row_dict["paragraph_summary"] or row_dict["one_sentence_summary"],
+            "one_sentence_summary": row_dict["one_sentence_summary"],
+            "paragraph_summary": row_dict["paragraph_summary"],
+            "category": row_dict["category"],
+            "date_range": f"{row_dict['date_range_earliest'] or '?'} - {row_dict['date_range_latest'] or '?'}",
+            "file_path": row_dict["file_path"]
+        }
+    return None
+
+
 def get_relationships_for_actor(actor: str, limit: int = 50) -> list[dict]:
     """Get relationships involving an actor."""
     conn = get_db()

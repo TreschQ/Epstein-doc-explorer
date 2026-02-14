@@ -3,10 +3,165 @@ Streamlit Chat Interface for Epstein Docs Agent API
 """
 
 import os
+import re
 import streamlit as st
 import requests
 import json
 import uuid
+
+
+def fetch_document(api_url: str, api_key: str, doc_id: str) -> dict | None:
+    """Fetch a document from the API."""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
+    try:
+        response = requests.get(f"{api_url}/api/documents/{doc_id}", headers=headers, timeout=30)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return None
+
+
+def render_text_with_sources(text: str, sources_dict: dict, api_url: str, api_key: str, msg_idx: int):
+    """
+    Render text with inline clickable doc_id references.
+
+    Detects doc_ids in the text and makes them clickable - clicking opens
+    a popover with the full document content.
+
+    Args:
+        text: The response text from the agent
+        sources_dict: Dict mapping doc_id to source metadata/content
+        api_url: API URL for fetching full documents
+        api_key: API key for authentication
+        msg_idx: Message index for unique keys
+    """
+    if not sources_dict:
+        st.markdown(text)
+        return
+
+    doc_ids = list(sources_dict.keys())
+    if not doc_ids:
+        st.markdown(text)
+        return
+
+    # Escape special regex characters and build pattern
+    escaped_ids = [re.escape(doc_id) for doc_id in doc_ids]
+    pattern = r'(' + '|'.join(escaped_ids) + r')'
+
+    # Split text by doc_id matches
+    parts = re.split(pattern, text)
+
+    # Render parts
+    i = 0
+    for part in parts:
+        if part in sources_dict:
+            # This is a doc_id - render as clickable popover
+            source_info = sources_dict.get(part, {})
+            with st.popover(f"📄 {part}"):
+                st.markdown(f"### {part}")
+
+                # Show metadata if available
+                if isinstance(source_info, dict):
+                    if source_info.get("category"):
+                        st.markdown(f"**Catégorie:** {source_info['category']}")
+                    if source_info.get("date_range"):
+                        st.markdown(f"**Période:** {source_info['date_range']}")
+                    if source_info.get("summary"):
+                        st.caption(source_info["summary"])
+
+                st.divider()
+
+                # Load and show full text directly
+                doc_data = fetch_document(api_url, api_key, part)
+                if doc_data and doc_data.get("full_text"):
+                    st.text_area(
+                        "Contenu complet",
+                        value=doc_data["full_text"],
+                        height=400,
+                        key=f"inline_text_{msg_idx}_{i}_{part}"
+                    )
+                else:
+                    st.warning("Document non trouvé")
+            i += 1
+        else:
+            # Regular text - render as markdown
+            if part:
+                st.markdown(part, unsafe_allow_html=True)
+
+
+def display_source_card(source: dict, api_url: str, api_key: str, idx: int):
+    """Display a source card with metadata and view button."""
+    doc_id = source.get("doc_id") if isinstance(source, dict) else source
+    summary = source.get("summary", "") if isinstance(source, dict) else ""
+    category = source.get("category", "") if isinstance(source, dict) else ""
+    date_range = source.get("date_range", "") if isinstance(source, dict) else ""
+    score = source.get("score") if isinstance(source, dict) else None
+
+    # Container for the source card
+    with st.container():
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            # Document ID as header
+            st.markdown(f"**{doc_id}**")
+
+            # Metadata pills
+            meta_parts = []
+            if category:
+                meta_parts.append(f"`{category}`")
+            if date_range and date_range != "? - ?":
+                meta_parts.append(f"📅 {date_range}")
+            if score is not None:
+                meta_parts.append(f"🎯 {score:.2f}")
+
+            if meta_parts:
+                st.markdown(" • ".join(meta_parts))
+
+            # Summary
+            if summary:
+                st.caption(summary[:200] + ("..." if len(summary) > 200 else ""))
+
+        with col2:
+            # View document button
+            if st.button("📖 Voir", key=f"view_doc_{idx}_{doc_id}"):
+                st.session_state[f"show_doc_{doc_id}"] = True
+
+        # Show document content if button was clicked
+        if st.session_state.get(f"show_doc_{doc_id}", False):
+            with st.expander(f"📄 Contenu de {doc_id}", expanded=True):
+                doc_data = fetch_document(api_url, api_key, doc_id)
+                if doc_data:
+                    # Document metadata
+                    st.markdown(f"**Catégorie:** {doc_data.get('category', 'N/A')}")
+                    st.markdown(f"**Période:** {doc_data.get('date_range', 'N/A')}")
+                    if doc_data.get("paragraph_summary"):
+                        st.info(doc_data["paragraph_summary"])
+
+                    st.divider()
+
+                    # Full text
+                    full_text = doc_data.get("full_text", "")
+                    if full_text:
+                        st.text_area(
+                            "Texte complet",
+                            value=full_text,
+                            height=400,
+                            key=f"text_area_{doc_id}"
+                        )
+                    else:
+                        st.warning("Texte non disponible")
+                else:
+                    st.error(f"Impossible de charger le document {doc_id}")
+
+                # Close button
+                if st.button("Fermer", key=f"close_doc_{doc_id}"):
+                    st.session_state[f"show_doc_{doc_id}"] = False
+                    st.rerun()
+
+        st.divider()
 
 # Default values from environment
 DEFAULT_API_URL = os.environ.get("API_URL", "http://localhost:3002")
@@ -75,20 +230,49 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Display chat history
-for message in st.session_state.messages:
+for msg_idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        # For assistant messages with sources, render with inline clickable references
+        if message["role"] == "assistant" and "sources" in message and message["sources"]:
+            # Build sources dict for inline rendering
+            sources_dict = {}
+            for source in message["sources"]:
+                if isinstance(source, dict):
+                    doc_id = source.get("doc_id")
+                    if doc_id:
+                        sources_dict[doc_id] = source
+                else:
+                    # Legacy format: source is just a string doc_id
+                    sources_dict[source] = {"doc_id": source}
+
+            # Render text with inline clickable sources
+            render_text_with_sources(
+                message["content"],
+                sources_dict,
+                st.session_state.api_url,
+                st.session_state.api_key,
+                msg_idx
+            )
+        else:
+            st.markdown(message["content"])
+
         # Show tools used
         if message["role"] == "assistant" and "tools" in message and message["tools"]:
             with st.expander(f"🔧 Outils utilisés ({len(message['tools'])})"):
                 for tool in message["tools"]:
                     st.markdown(f"**{tool['name']}**")
                     st.code(json.dumps(tool["args"], indent=2, ensure_ascii=False), language="json")
-        # Show sources
+
+        # Show all sources in collapsible section (still keep this for easy browsing)
         if message["role"] == "assistant" and "sources" in message and message["sources"]:
-            with st.expander(f"📄 Sources ({len(message['sources'])})"):
-                for source in message["sources"]:
-                    st.code(source)
+            with st.expander(f"📄 Toutes les sources ({len(message['sources'])})"):
+                for idx, source in enumerate(message["sources"]):
+                    display_source_card(
+                        source,
+                        st.session_state.api_url,
+                        st.session_state.api_key,
+                        idx=f"history_{msg_idx}_{idx}"
+                    )
 
 # Chat input
 if prompt := st.chat_input("Posez votre question..."):
@@ -157,9 +341,15 @@ if prompt := st.chat_input("Posez votre question..."):
                                     tool_name = event.get("tool_name", "unknown")
                                     sources = event.get("sources", [])
 
-                                    # Collect sources
+                                    # Collect sources (now with metadata)
                                     for src in sources:
-                                        if src not in all_sources:
+                                        # Check if source already exists by doc_id
+                                        src_id = src.get("doc_id") if isinstance(src, dict) else src
+                                        existing_ids = [
+                                            s.get("doc_id") if isinstance(s, dict) else s
+                                            for s in all_sources
+                                        ]
+                                        if src_id not in existing_ids:
                                             all_sources.append(src)
 
                                     with tool_container:
@@ -185,11 +375,16 @@ if prompt := st.chat_input("Posez votre question..."):
                             st.markdown(f"**{tool['name']}**")
                             st.code(json.dumps(tool["args"], indent=2, ensure_ascii=False), language="json")
 
-                # Show sources summary
+                # Show sources summary with metadata and view buttons
                 if all_sources:
                     with st.expander(f"📄 Sources ({len(all_sources)})"):
-                        for source in all_sources:
-                            st.code(source)
+                        for idx, source in enumerate(all_sources):
+                            display_source_card(
+                                source,
+                                st.session_state.api_url,
+                                st.session_state.api_key,
+                                idx=f"stream_{idx}"
+                            )
 
                 # Save to history
                 st.session_state.messages.append({
@@ -198,6 +393,10 @@ if prompt := st.chat_input("Posez votre question..."):
                     "sources": all_sources,
                     "tools": all_tools
                 })
+
+                # Rerun to display with clickable sources
+                if all_sources:
+                    st.rerun()
 
         except requests.exceptions.Timeout:
             st.error("Timeout - la requête a pris trop de temps")
