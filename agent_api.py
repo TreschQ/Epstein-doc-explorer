@@ -12,7 +12,7 @@ import os
 from typing import Annotated, Sequence, TypedDict
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,29 +42,12 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Origines autorisées (frontend uniquement)
-ALLOWED_ORIGINS = [
-    # Production
-    "https://epstein-front.vercel.app",
-    # Ajoute ton domaine custom si tu en as un
-]
-
-# En dev local, autoriser localhost
-if os.environ.get("ENV", "production") == "development":
-    ALLOWED_ORIGINS.extend([
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-    ])
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    # Regex pour autoriser toutes les previews Vercel du projet
-    allow_origin_regex=r"https://epstein-front.*\.vercel\.app",
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # API Key pour sécuriser les endpoints
