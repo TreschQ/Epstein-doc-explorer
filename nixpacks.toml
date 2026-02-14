@@ -2,14 +2,14 @@
 providers = ["python"]
 
 [phases.setup]
-nixPkgs = ["python311", "python311Packages.pip", "python311Packages.virtualenv"]
+nixPkgs = ["python311"]
 
 [phases.install]
-cmds = [
-    "python -m venv /app/.venv",
-    "/app/.venv/bin/pip install --upgrade pip",
-    "/app/.venv/bin/pip install -r requirements.txt"
-]
+# Nixpacks cache automatiquement /root/.cache/pip
+cmds = ["pip install -r requirements.txt"]
+
+# Cache les dépendances pip entre les builds
+cacheDirectories = ["/root/.cache/pip"]
 
 [start]
-cmd = "/app/.venv/bin/uvicorn agent_api:app --host 0.0.0.0 --port ${PORT:-8000}"
+cmd = "uvicorn agent_api:app --host 0.0.0.0 --port ${PORT:-8000}"
