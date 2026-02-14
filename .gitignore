@@ -14,7 +14,8 @@ env/
 .env.local
 .env.production
 
-# Database files (keep main db, ignore temp files)
+# Database files
+*.db
 *.db-shm
 *.db-wal
 
