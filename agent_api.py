@@ -7,6 +7,7 @@ questions about the Epstein document corpus.
 """
 
 import json
+import logging
 import operator
 import os
 from typing import Annotated, Sequence, TypedDict
@@ -24,6 +25,14 @@ from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
+
+# Configurer le logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("agent_api")
 
 # Réutiliser les fonctions du MCP server
 from mcp_server import (
@@ -207,6 +216,81 @@ model = ChatOpenAI(
         "X-Title": "Epstein Doc Explorer",
     },
 ).bind_tools(tools)
+
+# Modèle léger pour générer les titres de conversation (sans outils)
+# Note: max_tokens doit être assez élevé pour les modèles avec reasoning tokens (ex: MiniMax)
+title_model = ChatOpenAI(
+    model=OPENROUTER_MODEL,
+    openai_api_key=OPENROUTER_API_KEY,
+    openai_api_base="https://openrouter.ai/api/v1",
+    temperature=0,
+    max_tokens=200,
+    default_headers={
+        "HTTP-Referer": "https://epstein-doc-explorer.local",
+        "X-Title": "Epstein Doc Explorer",
+    },
+)
+
+async def generate_conversation_title(messages: Sequence[BaseMessage]) -> str:
+    """
+    Génère un résumé court de la conversation via le LLM.
+    Fallback sur la première requête tronquée en cas d'erreur.
+    """
+    logger.debug("generate_conversation_title: %d messages reçus", len(messages))
+
+    # Extraire les échanges user/assistant (exclure les ToolMessage)
+    conversation_parts = []
+    for msg in messages:
+        if isinstance(msg, HumanMessage) and msg.content:
+            conversation_parts.append(f"User: {msg.content}")
+        elif isinstance(msg, AIMessage) and msg.content and not (hasattr(msg, "tool_calls") and msg.tool_calls):
+            conversation_parts.append(f"Assistant: {msg.content}")
+
+    logger.debug("generate_conversation_title: %d conversation_parts extraits", len(conversation_parts))
+
+    if not conversation_parts:
+        logger.warning("generate_conversation_title: aucune conversation_parts, fallback 'Conversation'")
+        return "Conversation"
+
+    # Limiter la taille pour le prompt (derniers échanges)
+    conversation_text = "\n".join(conversation_parts[-6:])
+    if len(conversation_text) > 1500:
+        conversation_text = conversation_text[:1500] + "..."
+
+    prompt = f"""Generate a very short title (5-10 words maximum) that summarizes this conversation.
+Reply with ONLY the title, nothing else. Use the same language as the user.
+
+Conversation:
+{conversation_text}
+"""
+    try:
+        response = await title_model.ainvoke([HumanMessage(content=prompt)])
+        logger.info("generate_conversation_title: response=%r", response)
+        logger.info("generate_conversation_title: additional_kwargs=%s, response_metadata=%s",
+                    getattr(response, 'additional_kwargs', None), getattr(response, 'response_metadata', None))
+
+        # Handle different content formats (string or list of content blocks)
+        content = response.content
+        if isinstance(content, list):
+            # Some models return list of content blocks
+            text_parts = [block.get("text", "") if isinstance(block, dict) else str(block) for block in content]
+            content = " ".join(text_parts)
+
+        title = (content or "").strip()
+        if not title:
+            logger.warning("generate_conversation_title: LLM a retourné une réponse vide, fallback 'Conversation'")
+            return "Conversation"
+        logger.info("generate_conversation_title: titre généré = '%s'", title[:80])
+        return title[:80]
+    except Exception as e:
+        logger.warning("Échec génération titre conversation, fallback: %s", e, exc_info=True)
+        # Fallback: première requête utilisateur
+        for msg in messages:
+            if isinstance(msg, HumanMessage) and msg.content:
+                q = msg.content.strip()
+                return q[:50].rsplit(" ", 1)[0] + "..." if len(q) > 50 else q
+        return "Conversation"
+
 
 # System prompt for the agent
 SYSTEM_PROMPT = """You are an expert assistant specialized in analyzing the Epstein documents.
@@ -431,6 +515,7 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
     Query the document corpus with an agentic approach.
     The agent will search, analyze, and synthesize information to answer the question.
     """
+    logger.info("POST /api/query session_id=%s question=%s...", request.session_id, (request.question or "")[:50])
     config = {"configurable": {"thread_id": request.session_id or "default"}}
 
     try:
@@ -484,12 +569,8 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
             if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
                 final_answer = msg.content
 
-        # Generate conversation title from question
-        question = request.question.strip()
-        if len(question) > 50:
-            conversation_title = question[:50].rsplit(' ', 1)[0] + "..."
-        else:
-            conversation_title = question
+        # Générer le titre à partir du résumé de la conversation
+        conversation_title = await generate_conversation_title(messages)
 
         return QueryResponse(
             answer=final_answer,
@@ -499,6 +580,7 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
         )
 
     except Exception as e:
+        logger.exception("Erreur /api/query: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -508,6 +590,7 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
     Stream the agent's response for real-time UI updates.
     Returns Server-Sent Events (SSE).
     """
+    logger.info("POST /api/query/stream session_id=%s question=%s...", request.session_id, (request.question or "")[:50])
     config = {"configurable": {"thread_id": request.session_id or "default"}}
 
     async def generate():
@@ -581,16 +664,21 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
 
                     yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'sources': sources}, ensure_ascii=False)}\n\n"
 
-            # Generate conversation title from question
-            question = request.question.strip()
-            if len(question) > 50:
-                conversation_title = question[:50].rsplit(' ', 1)[0] + "..."
-            else:
-                conversation_title = question
+            # Générer le titre à partir du résumé de la conversation
+            try:
+                state = agent.get_state(config)
+                messages = (state.values or {}).get("messages", []) if state else []
+                logger.info("Stream title gen: state=%s, messages_count=%d", bool(state), len(messages))
+                conversation_title = await generate_conversation_title(messages)
+            except Exception as e:
+                logger.warning("Erreur génération titre stream, fallback: %s", e, exc_info=True)
+                question = request.question.strip()
+                conversation_title = question[:50].rsplit(" ", 1)[0] + "..." if len(question) > 50 else question
 
             yield f"data: {json.dumps({'type': 'done', 'conversation_title': conversation_title})}\n\n"
 
         except Exception as e:
+            logger.exception("Erreur /api/query/stream: %s", e)
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
     return StreamingResponse(
@@ -638,4 +726,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("AGENT_PORT", 3002))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    logger.info("Démarrage API sur le port %s", port)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
