@@ -164,17 +164,17 @@ def get_database_stats() -> str:
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM documents")
-    total_documents = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) as cnt FROM documents")
+    total_documents = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(*) FROM rdf_triples")
-    total_relationships = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) as cnt FROM rdf_triples")
+    total_relationships = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(DISTINCT actor) FROM rdf_triples")
-    unique_actors = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT actor) as cnt FROM rdf_triples")
+    unique_actors = cursor.fetchone()["cnt"]
 
-    cursor.execute("SELECT COUNT(DISTINCT target) FROM rdf_triples")
-    unique_targets = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT target) as cnt FROM rdf_triples")
+    unique_targets = cursor.fetchone()["cnt"]
 
     stats = {
         "total_documents": total_documents,
@@ -191,7 +191,7 @@ def get_database_stats() -> str:
         ORDER BY count DESC
         LIMIT 10
     """)
-    stats["categories"] = [{"name": row[0], "count": row[1]} for row in cursor]
+    stats["categories"] = [{"name": row["category"], "count": row["count"]} for row in cursor]
 
     cursor.close()
     conn.close()
