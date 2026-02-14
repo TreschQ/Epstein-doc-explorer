@@ -12,7 +12,7 @@ import os
 from typing import Annotated, Sequence, TypedDict
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,9 +29,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from mcp_server import (
     semantic_search,
     keyword_search,
+    hybrid_search,
     get_document_text,
     get_relationships_for_actor,
     get_db,
+    DATABASE_URL,
 )
 
 # ============== FastAPI App ==============
@@ -82,8 +84,9 @@ async def verify_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
 @tool
 def search_documents(query: str, limit: int = 10) -> str:
     """
-    Search documents using semantic similarity.
+    Search documents using semantic similarity with PGVector.
     Use this to find documents related to a topic, person, or event.
+    Fast and efficient vector similarity search.
 
     Args:
         query: Natural language search query (e.g., "meetings with politicians", "flights to the island")
@@ -128,8 +131,8 @@ def get_document(doc_id: str) -> str:
 @tool
 def search_by_keywords(keywords: str, limit: int = 10) -> str:
     """
-    Search documents by exact keywords in full text.
-    Use this for precise searches when you know specific terms to look for.
+    Search documents by keywords using PostgreSQL full-text search.
+    Uses tsvector and ts_rank for intelligent ranking. Fast and accurate.
 
     Args:
         keywords: Comma-separated keywords (e.g., "island, flight, 2005")
@@ -137,6 +140,25 @@ def search_by_keywords(keywords: str, limit: int = 10) -> str:
     """
     keyword_list = [k.strip() for k in keywords.split(",")]
     results = keyword_search(keyword_list, limit)
+    return json.dumps(results, indent=2, ensure_ascii=False)
+
+
+@tool
+def search_hybrid(query: str, keywords: str = "", limit: int = 10) -> str:
+    """
+    Hybrid search combining semantic similarity and keyword relevance with MRR scoring.
+    Best results when you have both a natural language query and specific keywords.
+
+    Uses PGVector for semantic search, full-text search for keywords,
+    and Mean Reciprocal Rank (MRR) for intelligent re-ranking.
+
+    Args:
+        query: Natural language query (e.g., "meetings with politicians")
+        keywords: Optional comma-separated keywords (e.g., "Bill Clinton, 2002")
+        limit: Maximum number of results to return
+    """
+    keyword_list = [k.strip() for k in keywords.split(",")] if keywords.strip() else None
+    results = hybrid_search(query, keyword_list, limit)
     return json.dumps(results, indent=2, ensure_ascii=False)
 
 
@@ -182,6 +204,7 @@ tools = [
     search_actor,
     get_document,
     search_by_keywords,
+    search_hybrid,
     get_database_stats,
 ]
 
@@ -207,18 +230,21 @@ Tu as accès à une base de données contenant des milliers de documents judicia
 emails, dépositions et autres pièces liées à l'affaire Jeffrey Epstein.
 
 Tes capacités:
-- Recherche sémantique dans les documents
-- Recherche par mots-clés exacts
+- Recherche sémantique avec PGVector (recherche vectorielle rapide)
+- Recherche par mots-clés avec full-text search PostgreSQL
+- Recherche hybride combinant sémantique + mots-clés avec scoring MRR
 - Exploration des relations entre personnes (qui a fait quoi à qui)
 - Lecture du texte complet des documents
 
 Instructions:
 1. Utilise les outils de recherche pour trouver les informations pertinentes
-2. Cite toujours tes sources avec les doc_id
-3. Sois factuel et objectif - rapporte ce que disent les documents
-4. Si tu ne trouves pas d'information, dis-le clairement
+2. Pour les questions thématiques, utilise search_documents (recherche sémantique)
+3. Pour les questions avec des termes spécifiques, utilise search_by_keywords
+4. Pour les meilleures résultats quand tu as à la fois un contexte et des mots-clés, utilise search_hybrid
 5. Pour les questions sur des personnes, utilise search_actor d'abord
-6. Pour les questions thématiques, utilise search_documents
+6. Cite toujours tes sources avec les doc_id
+7. Sois factuel et objectif - rapporte ce que disent les documents
+8. Si tu ne trouves pas d'information, dis-le clairement
 
 Réponds en français si la question est en français, sinon en anglais."""
 
@@ -296,6 +322,20 @@ class StreamEvent(BaseModel):
     tool_args: dict | None = None
 
 
+class SearchRequest(BaseModel):
+    query: str
+    keywords: str | None = None
+    limit: int = 10
+
+
+class HybridSearchRequest(BaseModel):
+    query: str
+    keywords: str | None = None
+    limit: int = 10
+    semantic_weight: float = 0.6
+    keyword_weight: float = 0.4
+
+
 # ============== API Endpoints ==============
 
 @app.get("/")
@@ -326,11 +366,58 @@ async def get_stats():
         "total_documents": total_docs,
         "total_relationships": total_rels,
         "unique_actors": unique_actors,
+        "search_backend": "PGVector (PostgreSQL)" if DATABASE_URL else "NumPy (SQLite fallback)",
     }
 
     cursor.close()
     conn.close()
     return stats
+
+
+@app.post("/api/search/semantic")
+async def semantic_search_endpoint(request: SearchRequest, _: str = Depends(verify_api_key)):
+    """
+    Direct semantic search endpoint using PGVector.
+    Fast vector similarity search without agent overhead.
+    """
+    results = semantic_search(request.query, request.limit)
+    return {"results": results, "method": "semantic_search", "backend": "pgvector"}
+
+
+@app.post("/api/search/keywords")
+async def keyword_search_endpoint(request: SearchRequest, _: str = Depends(verify_api_key)):
+    """
+    Direct keyword search endpoint using PostgreSQL full-text search.
+    """
+    keyword_list = [k.strip() for k in request.keywords.split(",")] if request.keywords else []
+    results = keyword_search(keyword_list, request.limit)
+    return {"results": results, "method": "keyword_search", "backend": "tsvector"}
+
+
+@app.post("/api/search/hybrid")
+async def hybrid_search_endpoint(request: HybridSearchRequest, _: str = Depends(verify_api_key)):
+    """
+    Direct hybrid search endpoint combining semantic and keyword search with MRR scoring.
+
+    Combines PGVector semantic search with PostgreSQL full-text search,
+    re-ranked using Mean Reciprocal Rank principles.
+    """
+    keyword_list = [k.strip() for k in request.keywords.split(",")] if request.keywords else None
+    results = hybrid_search(
+        request.query,
+        keyword_list,
+        request.limit,
+        request.semantic_weight,
+        request.keyword_weight
+    )
+    return {
+        "results": results,
+        "method": "hybrid_search",
+        "weights": {
+            "semantic": request.semantic_weight,
+            "keyword": request.keyword_weight
+        }
+    }
 
 
 @app.post("/api/query", response_model=QueryResponse)
