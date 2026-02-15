@@ -10,6 +10,7 @@ import json
 import logging
 import operator
 import os
+import re
 from typing import Annotated, Sequence, TypedDict
 
 import boto3
@@ -62,13 +63,36 @@ if BUCKET_NAME and BUCKET_ACCESS_KEY_ID and BUCKET_SECRET_ACCESS_KEY:
         logger.warning("Failed to configure S3 client: %s", e)
 
 
+def extract_bucket_filename(doc_id: str) -> str | None:
+    """
+    Extract the bucket filename from a doc_id.
+    Handles various formats like TEXT-002-HOUSE_OVERSIGHT_033508 to extract HOUSE_OVERSIGHT_033508.
+
+    Args:
+        doc_id: Document ID in various formats
+
+    Returns:
+        The cleaned filename for bucket lookup (e.g., HOUSE_OVERSIGHT_033508)
+    """
+    if not doc_id:
+        return None
+
+    # Pattern to match HOUSE_OVERSIGHT_XXXXXX or similar patterns (WORD_WORD_digits)
+    match = re.search(r'([A-Z]+_[A-Z]+_\d+)', doc_id)
+    if match:
+        return match.group(1)
+
+    # Fallback: return original doc_id if no pattern found
+    return doc_id
+
+
 def generate_presigned_url(doc_id: str, expiration: int = 3600) -> str | None:
     """
     Generate a presigned URL for an image in the S3 bucket.
     Files are stored as {doc_id}.jpg in epstein/001/ to epstein/012/ folders.
 
     Args:
-        doc_id: Document ID (e.g., HOUSE_OVERSIGHT_010479)
+        doc_id: Document ID (e.g., HOUSE_OVERSIGHT_010479 or TEXT-002-HOUSE_OVERSIGHT_033508)
         expiration: URL expiration time in seconds (default 1 hour)
 
     Returns:
@@ -77,7 +101,12 @@ def generate_presigned_url(doc_id: str, expiration: int = 3600) -> str | None:
     if not s3_client or not BUCKET_NAME or not doc_id:
         return None
 
-    filename = f"{doc_id}.jpg"
+    # Extract the bucket filename from doc_id (handles prefixes like TEXT-002-)
+    bucket_filename = extract_bucket_filename(doc_id)
+    if not bucket_filename:
+        return None
+
+    filename = f"{bucket_filename}.jpg"
 
     # Try each folder from 001 to 012
     for i in range(1, 13):
@@ -98,7 +127,7 @@ def generate_presigned_url(doc_id: str, expiration: int = 3600) -> str | None:
             # File not in this folder, try next
             continue
 
-    logger.warning("File not found in any folder for doc_id: %s", doc_id)
+    logger.warning("File not found in any folder for doc_id: %s (extracted: %s)", doc_id, bucket_filename)
     return None
 
 
