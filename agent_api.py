@@ -12,6 +12,10 @@ import operator
 import os
 from typing import Annotated, Sequence, TypedDict
 
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
+
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
@@ -33,6 +37,70 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("agent_api")
+
+# ============== S3 Client Configuration ==============
+
+BUCKET_NAME = os.environ.get("BUCKET_NAME")
+BUCKET_ACCESS_KEY_ID = os.environ.get("BUCKET_ACCESS_KEY_ID")
+BUCKET_SECRET_ACCESS_KEY = os.environ.get("BUCKET_SECRET_ACCESS_KEY")
+BUCKET_REGION = os.environ.get("BUCKET_REGION", "us-west-1")
+S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "https://t3.storageapi.dev")
+
+s3_client = None
+if BUCKET_NAME and BUCKET_ACCESS_KEY_ID and BUCKET_SECRET_ACCESS_KEY:
+    try:
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=S3_ENDPOINT_URL,
+            aws_access_key_id=BUCKET_ACCESS_KEY_ID,
+            aws_secret_access_key=BUCKET_SECRET_ACCESS_KEY,
+            region_name=BUCKET_REGION,
+            config=Config(signature_version="s3v4"),
+        )
+        logger.info("S3 client configured for bucket: %s", BUCKET_NAME)
+    except Exception as e:
+        logger.warning("Failed to configure S3 client: %s", e)
+
+
+def generate_presigned_url(doc_id: str, expiration: int = 3600) -> str | None:
+    """
+    Generate a presigned URL for an image in the S3 bucket.
+    Files are stored as {doc_id}.jpg in epstein/001/ to epstein/012/ folders.
+
+    Args:
+        doc_id: Document ID (e.g., HOUSE_OVERSIGHT_010479)
+        expiration: URL expiration time in seconds (default 1 hour)
+
+    Returns:
+        Presigned URL string or None if generation fails
+    """
+    if not s3_client or not BUCKET_NAME or not doc_id:
+        return None
+
+    filename = f"{doc_id}.jpg"
+
+    # Try each folder from 001 to 012
+    for i in range(1, 13):
+        folder = f"{i:03d}"
+        key = f"epstein/{folder}/{filename}"
+
+        try:
+            # Check if file exists
+            s3_client.head_object(Bucket=BUCKET_NAME, Key=key)
+            # File exists, generate presigned URL
+            url = s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": BUCKET_NAME, "Key": key},
+                ExpiresIn=expiration,
+            )
+            return url
+        except ClientError:
+            # File not in this folder, try next
+            continue
+
+    logger.warning("File not found in any folder for doc_id: %s", doc_id)
+    return None
+
 
 # Réutiliser les fonctions du MCP server
 from mcp_server import (
@@ -398,6 +466,7 @@ class SourceInfo(BaseModel):
     date_range: str | None = None
     score: float | None = None
     full_text: str | None = None
+    image_url: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -443,6 +512,7 @@ async def get_document_endpoint(doc_id: str, _: str = Depends(verify_api_key)):
     """
     document = get_document_with_metadata(doc_id)
     if document:
+        document["image_url"] = generate_presigned_url(doc_id)
         return document
     raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
 
@@ -484,6 +554,8 @@ async def semantic_search_endpoint(request: SearchRequest, _: str = Depends(veri
     Fast vector similarity search without agent overhead.
     """
     results = semantic_search(request.query, request.limit)
+    for r in results:
+        r["image_url"] = generate_presigned_url(r.get("doc_id"))
     return {"results": results, "method": "semantic_search", "backend": "pgvector"}
 
 
@@ -494,6 +566,8 @@ async def keyword_search_endpoint(request: SearchRequest, _: str = Depends(verif
     """
     keyword_list = [k.strip() for k in request.keywords.split(",")] if request.keywords else []
     results = keyword_search(keyword_list, request.limit)
+    for r in results:
+        r["image_url"] = generate_presigned_url(r.get("doc_id"))
     return {"results": results, "method": "keyword_search", "backend": "tsvector"}
 
 
@@ -513,6 +587,8 @@ async def hybrid_search_endpoint(request: HybridSearchRequest, _: str = Depends(
         request.semantic_weight,
         request.keyword_weight
     )
+    for r in results:
+        r["image_url"] = generate_presigned_url(r.get("doc_id"))
     return {
         "results": results,
         "method": "hybrid_search",
@@ -575,6 +651,7 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
                                         date_range=item.get("date_range"),
                                         score=score,
                                         full_text=doc_data.get("full_text") if doc_data else None,
+                                        image_url=generate_presigned_url(doc_id),
                                     )
                 except (json.JSONDecodeError, TypeError):
                     pass
@@ -664,6 +741,7 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                                         "category": item.get("category") or (doc_data.get("category") if doc_data else None),
                                         "date_range": item.get("date_range") or (doc_data.get("date_range") if doc_data else None),
                                         "full_text": doc_data.get("full_text") if doc_data else None,
+                                        "image_url": generate_presigned_url(doc_id),
                                     }
                                     # Ajouter le score si disponible
                                     if "similarity" in item:
