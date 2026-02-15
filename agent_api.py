@@ -646,7 +646,7 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
 
                                     sources_dict[doc_id] = SourceInfo(
                                         doc_id=doc_id,
-                                        summary=item.get("summary"),
+                                        summary=doc_data.get("one_sentence_summary") if doc_data else item.get("summary"),
                                         category=item.get("category"),
                                         date_range=item.get("date_range"),
                                         score=score,
@@ -737,7 +737,7 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
 
                                     source_info = {
                                         "doc_id": doc_id,
-                                        "summary": item.get("summary") or (doc_data.get("summary") if doc_data else None),
+                                        "summary": doc_data.get("one_sentence_summary") if doc_data else item.get("summary"),
                                         "category": item.get("category") or (doc_data.get("category") if doc_data else None),
                                         "date_range": item.get("date_range") or (doc_data.get("date_range") if doc_data else None),
                                         "full_text": doc_data.get("full_text") if doc_data else None,
