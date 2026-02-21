@@ -9,8 +9,8 @@ Uses PGVector for efficient vector similarity search (PostgreSQL)
 or fallback to numpy calculations (SQLite).
 
 Features:
-- PGVector semantic search with HNSW index
-- PostgreSQL full-text search with tsvector
+- PGVector semantic search with IVFFlat index (via materialized view)
+- PostgreSQL full-text search with tsvector + GIN index
 - MRR (Mean Reciprocal Rank) scoring
 - Hybrid search combining semantic + keyword + MRR
 """
@@ -102,13 +102,12 @@ def semantic_search_pgvector(query: str, limit: int = 10) -> list[dict]:
     # Use PGVector cosine distance
     # cosine distance = 1 - cosine similarity
     cursor.execute("""
-        SELECT e.doc_id, e.embedding_vector, d.paragraph_summary, d.one_sentence_summary,
-               d.category, d.date_range_earliest, d.date_range_latest,
-               1 - (e.embedding_vector <=> %s::vector) as similarity
-        FROM document_embeddings e
-        JOIN documents d ON e.doc_id = d.doc_id
-        WHERE e.embedding_vector IS NOT NULL
-        ORDER BY e.embedding_vector <=> %s::vector
+        SELECT doc_id, paragraph_summary, one_sentence_summary,
+               category, date_range_earliest, date_range_latest,
+               1 - (embedding_vector <=> %s::vector) as similarity
+        FROM all_embeddings_mv
+        WHERE embedding_vector IS NOT NULL
+        ORDER BY embedding_vector <=> %s::vector
         LIMIT %s
     """, [query_vector_str, query_vector_str, limit])
 
@@ -145,8 +144,8 @@ def semantic_search_fallback(query: str, limit: int = 10) -> list[dict]:
     cursor.execute("""
         SELECT e.doc_id, e.embedding, d.paragraph_summary, d.one_sentence_summary,
                d.category, d.date_range_earliest, d.date_range_latest
-        FROM document_embeddings e
-        JOIN documents d ON e.doc_id = d.doc_id
+        FROM all_document_embeddings e
+        JOIN all_documents d ON e.doc_id = d.doc_id
     """)
 
     results = []
@@ -214,8 +213,9 @@ def keyword_search_postgres(keywords: list[str], limit: int = 10) -> list[dict]:
         SELECT doc_id, paragraph_summary, one_sentence_summary, category,
                date_range_earliest, date_range_latest,
                ts_rank(text_search_vector, to_tsquery('english', %s)) as rank
-        FROM documents
-        WHERE text_search_vector @@ to_tsquery('english', %s)
+        FROM all_embeddings_mv
+        WHERE text_search_vector IS NOT NULL
+          AND text_search_vector @@ to_tsquery('english', %s)
         ORDER BY rank DESC
         LIMIT %s
     """, [tsquery, tsquery, limit])
@@ -251,7 +251,7 @@ def keyword_search_fallback(keywords: list[str], limit: int = 10) -> list[dict]:
     query = f"""
         SELECT doc_id, paragraph_summary, one_sentence_summary, category,
                date_range_earliest, date_range_latest
-        FROM documents
+        FROM all_documents
         WHERE {conditions}
         LIMIT ?
     """
@@ -468,9 +468,9 @@ def get_document_text(doc_id: str) -> str | None:
     cursor = conn.cursor()
 
     if _is_postgres():
-        cursor.execute("SELECT full_text FROM documents WHERE doc_id = %s", [doc_id])
+        cursor.execute("SELECT full_text FROM all_embeddings_mv WHERE doc_id = %s", [doc_id])
     else:
-        cursor.execute("SELECT full_text FROM documents WHERE doc_id = ?", [doc_id])
+        cursor.execute("SELECT full_text FROM all_documents WHERE doc_id = ?", [doc_id])
 
     row = cursor.fetchone()
     cursor.close()
@@ -491,13 +491,13 @@ def get_document_with_metadata(doc_id: str) -> dict | None:
         cursor.execute("""
             SELECT doc_id, full_text, one_sentence_summary, paragraph_summary,
                    category, date_range_earliest, date_range_latest, file_path
-            FROM documents WHERE doc_id = %s
+            FROM all_documents WHERE doc_id = %s
         """, [doc_id])
     else:
         cursor.execute("""
             SELECT doc_id, full_text, one_sentence_summary, paragraph_summary,
                    category, date_range_earliest, date_range_latest, file_path
-            FROM documents WHERE doc_id = ?
+            FROM all_documents WHERE doc_id = ?
         """, [doc_id])
 
     row = cursor.fetchone()
@@ -644,17 +644,17 @@ def get_stats() -> str:
     conn = get_db()
 
     stats = {
-        "total_documents": conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0],
+        "total_documents": conn.execute("SELECT COUNT(*) FROM all_embeddings_mv").fetchone()[0],
         "total_relationships": conn.execute("SELECT COUNT(*) FROM rdf_triples").fetchone()[0],
         "total_actors": conn.execute("SELECT COUNT(DISTINCT actor) FROM rdf_triples").fetchone()[0],
-        "total_embeddings": conn.execute("SELECT COUNT(*) FROM document_embeddings").fetchone()[0],
-        "search_backend": "PGVector (PostgreSQL)" if _is_postgres() else "NumPy (SQLite fallback)",
+        "total_embeddings": conn.execute("SELECT COUNT(*) FROM all_embeddings_mv").fetchone()[0],
+        "search_backend": "PGVector (PostgreSQL) - Materialized View" if _is_postgres() else "NumPy (SQLite fallback)",
         "categories": []
     }
 
     cursor = conn.execute("""
         SELECT category, COUNT(*) as count
-        FROM documents
+        FROM all_embeddings_mv
         GROUP BY category
         ORDER BY count DESC
     """)
