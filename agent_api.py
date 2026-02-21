@@ -164,6 +164,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+async def warmup_neo4j():
+    """Warm up Neo4j connection and cache on startup."""
+    if _is_neo4j_available():
+        logger.info("Warming up Neo4j cache...")
+        try:
+            # Run a simple query to warm up the connection and cache
+            get_subgraph_for_persons(["Jeffrey Epstein"], depth=1, limit=5)
+            logger.info("Neo4j cache warmed up successfully")
+        except Exception as e:
+            logger.warning("Neo4j warmup failed: %s", e)
+    else:
+        logger.info("Neo4j not configured, skipping warmup")
+
+
 # API Key pour sécuriser les endpoints
 API_KEY = os.environ.get("API_KEY")
 
