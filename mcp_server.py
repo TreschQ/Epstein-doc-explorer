@@ -209,15 +209,19 @@ def keyword_search_postgres(keywords: list[str], limit: int = 10) -> list[dict]:
     # Using & for AND, | for OR
     tsquery = " & ".join([f"'{kw}'" for kw in keywords])
 
+    # Requête optimisée : sous-requête pour le ranking, puis JOIN pour les gros champs
     cursor.execute("""
-        SELECT doc_id, paragraph_summary, one_sentence_summary, category,
-               date_range_earliest, date_range_latest,
-               ts_rank(text_search_vector, to_tsquery('english', %s)) as rank
-        FROM all_embeddings_mv
-        WHERE text_search_vector IS NOT NULL
-          AND text_search_vector @@ to_tsquery('english', %s)
-        ORDER BY rank DESC
-        LIMIT %s
+        SELECT m.doc_id, m.paragraph_summary, m.one_sentence_summary,
+               m.category, m.date_range_earliest, m.date_range_latest, sub.rank
+        FROM (
+            SELECT doc_id, ts_rank(text_search_vector, to_tsquery('english', %s)) as rank
+            FROM all_embeddings_mv
+            WHERE text_search_vector @@ to_tsquery('english', %s)
+            ORDER BY rank DESC
+            LIMIT %s
+        ) sub
+        JOIN all_embeddings_mv m ON m.doc_id = sub.doc_id
+        ORDER BY sub.rank DESC
     """, [tsquery, tsquery, limit])
 
     results = []
