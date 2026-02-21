@@ -576,25 +576,26 @@ def get_subgraph_for_persons(persons: list[str], depth: int = 1, limit: int = 50
         return {"error": "Neo4j not configured", "nodes": [], "edges": []}
 
     with driver.session() as session:
-        # Build query for multiple persons with variable depth
-        person_patterns = " OR ".join([f"p.name =~ '(?i).*{p}.*'" for p in persons])
+        # Use fulltext index for fast person lookup
+        search_query = " OR ".join(persons)
 
-        result = session.run(f"""
-            MATCH path = (p:Person)-[r:RELATION*1..{depth}]-(connected:Person)
-            WHERE {person_patterns}
-            WITH p, connected, r, path
-            LIMIT {limit * 2}
-            UNWIND relationships(path) as rel
-            WITH DISTINCT startNode(rel) as source, endNode(rel) as target, rel
-            RETURN source.name as source_name,
-                   target.name as target_name,
+        result = session.run("""
+            CALL db.index.fulltext.queryNodes('person_search', $search_query)
+            YIELD node as p, score
+            WHERE score > 0.5
+            WITH p
+            LIMIT 10
+            MATCH (p)-[rel:RELATION]-(connected:Person)
+            WITH p, connected, rel
+            LIMIT $edge_limit
+            RETURN p.name as source_name,
+                   connected.name as target_name,
                    rel.action as action,
                    rel.doc_id as doc_id,
                    rel.timestamp as timestamp,
                    rel.location as location,
                    rel.topic as topic
-            LIMIT {limit}
-        """)
+        """, search_query=search_query, edge_limit=limit)
 
         nodes_map = {}
         edges = []
@@ -665,19 +666,24 @@ def find_shortest_path(person1: str, person2: str, max_depth: int = 5) -> dict:
         return {"error": "Neo4j not configured", "path": None}
 
     with driver.session() as session:
-        result = session.run(f"""
-            MATCH (start:Person), (end:Person)
-            WHERE start.name =~ '(?i).*{person1}.*'
-              AND end.name =~ '(?i).*{person2}.*'
-            MATCH path = shortestPath((start)-[r:RELATION*1..{max_depth}]-(end))
-            RETURN path,
-                   [n IN nodes(path) | n.name] as node_names,
-                   [r IN relationships(path) | {{
+        # Use fulltext index for fast person lookup
+        result = session.run("""
+            CALL db.index.fulltext.queryNodes('person_search', $person1) YIELD node as start, score as s1
+            WHERE s1 > 0.5
+            WITH start
+            LIMIT 1
+            CALL db.index.fulltext.queryNodes('person_search', $person2) YIELD node as end, score as s2
+            WHERE s2 > 0.5
+            WITH start, end
+            LIMIT 1
+            MATCH path = shortestPath((start)-[r:RELATION*1..5]-(end))
+            RETURN [n IN nodes(path) | n.name] as node_names,
+                   [r IN relationships(path) | {
                        action: r.action,
                        doc_id: r.doc_id
-                   }}] as relationships
+                   }] as relationships
             LIMIT 1
-        """)
+        """, person1=person1, person2=person2)
 
         record = result.single()
         if not record:
