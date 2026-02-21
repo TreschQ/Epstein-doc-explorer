@@ -314,7 +314,7 @@ tools = [
 
 # Modèle via OpenRouter
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-haiku-4.5")
 
 model = ChatOpenAI(
     model=OPENROUTER_MODEL,
