@@ -937,9 +937,14 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
 
                     # Send graph data as separate event type (include sources too)
                     if graph_data:
+                        logger.info("Sending graph event with %d nodes, %d edges",
+                                   len(graph_data.get("nodes", [])), len(graph_data.get("edges", [])))
                         yield f"data: {json.dumps({'type': 'graph', 'tool_name': tool_name, 'graph': graph_data, 'sources': sources}, ensure_ascii=False)}\n\n"
                     else:
                         yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'sources': sources}, ensure_ascii=False)}\n\n"
+
+            # All tool events processed, now generate title and send done
+            logger.info("All stream events processed, generating title...")
 
             # Générer le titre à partir du résumé de la conversation
             try:
@@ -952,6 +957,7 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                 question = request.question.strip()
                 conversation_title = question[:50].rsplit(" ", 1)[0] + "..." if len(question) > 50 else question
 
+            logger.info("Sending done event, closing stream")
             yield f"data: {json.dumps({'type': 'done', 'conversation_title': conversation_title}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
