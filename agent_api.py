@@ -919,9 +919,9 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                     except (json.JSONDecodeError, TypeError):
                         pass
 
-                    # Send graph data as separate event type
+                    # Send graph data as separate event type (include sources too)
                     if graph_data:
-                        yield f"data: {json.dumps({'type': 'graph', 'tool_name': tool_name, 'graph': graph_data}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'graph', 'tool_name': tool_name, 'graph': graph_data, 'sources': sources}, ensure_ascii=False)}\n\n"
                     else:
                         yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'sources': sources}, ensure_ascii=False)}\n\n"
 
