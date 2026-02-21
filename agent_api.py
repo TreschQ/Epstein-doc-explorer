@@ -552,10 +552,6 @@ async def get_stats():
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) as count FROM documents")
-    row = cursor.fetchone()
-    total_docs = row["count"] if isinstance(row, dict) else row[0]
-
     cursor.execute("SELECT COUNT(*) as count FROM rdf_triples")
     row = cursor.fetchone()
     total_rels = row["count"] if isinstance(row, dict) else row[0]
@@ -564,8 +560,12 @@ async def get_stats():
     row = cursor.fetchone()
     unique_actors = row["count"] if isinstance(row, dict) else row[0]
 
+    cursor.execute("SELECT COUNT(*) as count FROM all_embeddings_mv")
+    row = cursor.fetchone()
+    total_documents = row["count"] if isinstance(row, dict) else row[0]
+
     stats = {
-        "total_documents": total_docs,
+        "total_documents": total_documents,
         "total_relationships": total_rels,
         "unique_actors": unique_actors,
         "search_backend": "PGVector (PostgreSQL)" if DATABASE_URL else "NumPy (SQLite fallback)",
