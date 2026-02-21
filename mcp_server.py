@@ -525,6 +525,225 @@ def get_document_with_metadata(doc_id: str) -> dict | None:
     return None
 
 
+# ==================== Neo4j Connection ====================
+
+NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD")
+
+_neo4j_driver = None
+
+
+def get_neo4j_driver():
+    """Get Neo4j driver (lazy loaded)."""
+    global _neo4j_driver
+    if _neo4j_driver is None and NEO4J_PASSWORD:
+        from neo4j import GraphDatabase
+        _neo4j_driver = GraphDatabase.driver(
+            NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD)
+        )
+    return _neo4j_driver
+
+
+def _is_neo4j_available() -> bool:
+    """Check if Neo4j is configured and available."""
+    driver = get_neo4j_driver()
+    if driver is None:
+        return False
+    try:
+        driver.verify_connectivity()
+        return True
+    except Exception:
+        return False
+
+
+# ==================== Neo4j Graph Queries ====================
+
+def get_subgraph_for_persons(persons: list[str], depth: int = 1, limit: int = 50) -> dict:
+    """
+    Get a subgraph centered around specific persons.
+
+    Args:
+        persons: List of person names to center the graph around
+        depth: How many hops to include (1 = direct connections only)
+        limit: Maximum number of relationships to return
+
+    Returns:
+        Graph structure with nodes and edges
+    """
+    driver = get_neo4j_driver()
+    if not driver:
+        return {"error": "Neo4j not configured", "nodes": [], "edges": []}
+
+    with driver.session() as session:
+        # Build query for multiple persons with variable depth
+        person_patterns = " OR ".join([f"p.name =~ '(?i).*{p}.*'" for p in persons])
+
+        result = session.run(f"""
+            MATCH path = (p:Person)-[r:RELATION*1..{depth}]-(connected:Person)
+            WHERE {person_patterns}
+            WITH p, connected, r, path
+            LIMIT {limit * 2}
+            UNWIND relationships(path) as rel
+            WITH DISTINCT startNode(rel) as source, endNode(rel) as target, rel
+            RETURN source.name as source_name,
+                   target.name as target_name,
+                   rel.action as action,
+                   rel.doc_id as doc_id,
+                   rel.timestamp as timestamp,
+                   rel.location as location,
+                   rel.topic as topic
+            LIMIT {limit}
+        """)
+
+        nodes_map = {}
+        edges = []
+
+        for record in result:
+            source = record["source_name"]
+            target = record["target_name"]
+
+            # Add nodes
+            if source not in nodes_map:
+                nodes_map[source] = {
+                    "id": source,
+                    "label": source,
+                    "connections": 0
+                }
+            if target not in nodes_map:
+                nodes_map[target] = {
+                    "id": target,
+                    "label": target,
+                    "connections": 0
+                }
+
+            nodes_map[source]["connections"] += 1
+            nodes_map[target]["connections"] += 1
+
+            # Add edge
+            edges.append({
+                "source": source,
+                "target": target,
+                "action": record["action"],
+                "doc_id": record["doc_id"],
+                "timestamp": record["timestamp"],
+                "location": record["location"],
+                "topic": record["topic"]
+            })
+
+        # Mark queried persons
+        for name in nodes_map:
+            for person in persons:
+                if person.lower() in name.lower():
+                    nodes_map[name]["is_queried"] = True
+                    break
+
+        nodes = sorted(nodes_map.values(), key=lambda x: x["connections"], reverse=True)
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "queried_persons": persons,
+        "depth": depth
+    }
+
+
+def find_shortest_path(person1: str, person2: str, max_depth: int = 5) -> dict:
+    """
+    Find the shortest connection path between two persons.
+
+    Args:
+        person1: Name of first person
+        person2: Name of second person
+        max_depth: Maximum number of hops to search
+
+    Returns:
+        Path information with nodes and edges
+    """
+    driver = get_neo4j_driver()
+    if not driver:
+        return {"error": "Neo4j not configured", "path": None}
+
+    with driver.session() as session:
+        result = session.run(f"""
+            MATCH (start:Person), (end:Person)
+            WHERE start.name =~ '(?i).*{person1}.*'
+              AND end.name =~ '(?i).*{person2}.*'
+            MATCH path = shortestPath((start)-[r:RELATION*1..{max_depth}]-(end))
+            RETURN path,
+                   [n IN nodes(path) | n.name] as node_names,
+                   [r IN relationships(path) | {{
+                       action: r.action,
+                       doc_id: r.doc_id
+                   }}] as relationships
+            LIMIT 1
+        """)
+
+        record = result.single()
+        if not record:
+            return {
+                "found": False,
+                "person1": person1,
+                "person2": person2,
+                "message": f"No path found between {person1} and {person2} within {max_depth} hops"
+            }
+
+        node_names = record["node_names"]
+        relationships = record["relationships"]
+
+        # Build nodes and edges
+        nodes = [{"id": name, "label": name} for name in node_names]
+        edges = []
+
+        for i, rel in enumerate(relationships):
+            edges.append({
+                "source": node_names[i],
+                "target": node_names[i + 1],
+                "action": rel["action"],
+                "doc_id": rel["doc_id"]
+            })
+
+        return {
+            "found": True,
+            "person1": person1,
+            "person2": person2,
+            "path_length": len(relationships),
+            "nodes": nodes,
+            "edges": edges
+        }
+
+
+def search_persons_neo4j(query: str, limit: int = 20) -> list[dict]:
+    """
+    Search for persons by name in Neo4j.
+
+    Args:
+        query: Search query (partial name match)
+        limit: Maximum results
+
+    Returns:
+        List of matching persons with connection counts
+    """
+    driver = get_neo4j_driver()
+    if not driver:
+        return []
+
+    with driver.session() as session:
+        result = session.run("""
+            MATCH (p:Person)
+            WHERE p.name =~ $pattern
+            WITH p
+            MATCH (p)-[r:RELATION]-()
+            RETURN p.name as name, count(r) as connections
+            ORDER BY connections DESC
+            LIMIT $limit
+        """, pattern=f"(?i).*{query}.*", limit=limit)
+
+        return [{"name": r["name"], "connections": r["connections"]} for r in result]
+
+
+# ==================== PostgreSQL Relationship Queries ====================
+
 def get_relationships_for_actor(actor: str, limit: int = 50) -> list[dict]:
     """Get relationships involving an actor."""
     conn = get_db()
@@ -570,6 +789,128 @@ def get_relationships_for_actor(actor: str, limit: int = 50) -> list[dict]:
     cursor.close()
     conn.close()
     return results
+
+
+def build_connection_graph(persons: list[str], limit: int = 100) -> dict:
+    """
+    Build a graph of connections between persons.
+
+    Returns a graph structure with nodes (persons) and edges (relationships).
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Build query for multiple persons
+    all_relationships = []
+
+    for person in persons:
+        if _is_postgres():
+            cursor.execute("""
+                SELECT doc_id, timestamp, actor, action, target, location,
+                       explicit_topic, implicit_topic
+                FROM rdf_triples
+                WHERE actor ILIKE %s OR target ILIKE %s
+                LIMIT %s
+            """, [f"%{person}%", f"%{person}%", limit])
+        else:
+            cursor.execute("""
+                SELECT doc_id, timestamp, actor, action, target, location,
+                       explicit_topic, implicit_topic
+                FROM rdf_triples
+                WHERE actor LIKE ? OR target LIKE ?
+                LIMIT ?
+            """, [f"%{person}%", f"%{person}%", limit])
+
+        for row in cursor:
+            row_dict = dict(row) if hasattr(row, 'keys') else row
+            all_relationships.append(row_dict)
+
+    cursor.close()
+    conn.close()
+
+    # Build nodes and edges
+    nodes_map = {}  # person_name -> node data
+    edges_map = {}  # (source, target) -> edge data
+
+    for rel in all_relationships:
+        actor = rel["actor"]
+        target = rel["target"]
+        action = rel["action"]
+        doc_id = rel["doc_id"]
+
+        # Add/update actor node
+        if actor not in nodes_map:
+            nodes_map[actor] = {
+                "id": actor,
+                "label": actor,
+                "connections": 0,
+                "doc_ids": set()
+            }
+        nodes_map[actor]["connections"] += 1
+        nodes_map[actor]["doc_ids"].add(doc_id)
+
+        # Add/update target node
+        if target not in nodes_map:
+            nodes_map[target] = {
+                "id": target,
+                "label": target,
+                "connections": 0,
+                "doc_ids": set()
+            }
+        nodes_map[target]["connections"] += 1
+        nodes_map[target]["doc_ids"].add(doc_id)
+
+        # Add/update edge (use sorted tuple to avoid duplicates A->B and B->A)
+        edge_key = tuple(sorted([actor, target]))
+        if edge_key not in edges_map:
+            edges_map[edge_key] = {
+                "source": edge_key[0],
+                "target": edge_key[1],
+                "actions": [],
+                "doc_ids": set(),
+                "count": 0
+            }
+        edges_map[edge_key]["actions"].append(action)
+        edges_map[edge_key]["doc_ids"].add(doc_id)
+        edges_map[edge_key]["count"] += 1
+
+    # Convert to lists and summarize
+    nodes = []
+    for node in nodes_map.values():
+        nodes.append({
+            "id": node["id"],
+            "label": node["label"],
+            "connections": node["connections"],
+            "doc_ids": list(node["doc_ids"])[:10]  # Limit doc_ids
+        })
+
+    edges = []
+    for edge in edges_map.values():
+        # Summarize actions (most common)
+        from collections import Counter
+        action_counts = Counter(edge["actions"])
+        top_actions = [a for a, _ in action_counts.most_common(3)]
+
+        edges.append({
+            "source": edge["source"],
+            "target": edge["target"],
+            "label": ", ".join(top_actions),
+            "actions": top_actions,
+            "doc_ids": list(edge["doc_ids"])[:10],
+            "count": edge["count"]
+        })
+
+    # Sort nodes by connections (most connected first)
+    nodes.sort(key=lambda x: x["connections"], reverse=True)
+
+    # Sort edges by count
+    edges.sort(key=lambda x: x["count"], reverse=True)
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "total_relationships": len(all_relationships)
+    }
 
 
 # ==================== MCP Tools ====================

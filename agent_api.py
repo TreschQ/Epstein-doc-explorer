@@ -141,6 +141,11 @@ from mcp_server import (
     get_relationships_for_actor,
     get_db,
     DATABASE_URL,
+    # Neo4j graph functions
+    get_subgraph_for_persons,
+    find_shortest_path,
+    search_persons_neo4j,
+    _is_neo4j_available,
 )
 
 # ============== FastAPI App ==============
@@ -295,6 +300,46 @@ def get_database_stats() -> str:
     return json.dumps(stats, indent=2, ensure_ascii=False)
 
 
+@tool
+def get_connection_graph(persons: str, depth: int = 1) -> str:
+    """
+    Get a graph of connections between people from Neo4j.
+    Use this when the user asks about relationships, connections, or links between people.
+    Returns a graph structure that can be visualized.
+
+    IMPORTANT: Use this tool for ANY question about:
+    - connections between people ("quelle connexion entre X et Y")
+    - relationships ("relation entre...")
+    - links ("lien entre...")
+    - how people are connected
+    - network of a person
+
+    Args:
+        persons: Comma-separated names of people (e.g., "Bill Clinton, Jeffrey Epstein")
+        depth: How many connection hops to include (1=direct only, 2=friends of friends)
+    """
+    person_list = [p.strip() for p in persons.split(",")]
+    result = get_subgraph_for_persons(person_list, depth=depth, limit=50)
+    # Mark this as graph data for frontend
+    result["_type"] = "graph"
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@tool
+def find_connection_path(person1: str, person2: str) -> str:
+    """
+    Find the shortest path connecting two people in the relationship graph.
+    Use this to discover how two people are connected through others.
+
+    Args:
+        person1: Name of first person
+        person2: Name of second person
+    """
+    result = find_shortest_path(person1, person2, max_depth=5)
+    result["_type"] = "path"
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
 # ============== LangGraph Agent ==============
 
 class AgentState(TypedDict):
@@ -310,6 +355,8 @@ tools = [
     search_by_keywords,
     search_hybrid,
     get_database_stats,
+    get_connection_graph,
+    find_connection_path,
 ]
 
 # Modèle via OpenRouter
@@ -414,6 +461,7 @@ Your capabilities:
 - Hybrid search combining semantic + keywords with MRR scoring
 - Exploring relationships between people (who did what to whom)
 - Reading full document text
+- **Graph visualization of connections between people (Neo4j)**
 
 Instructions:
 1. Use search tools to find relevant information
@@ -424,6 +472,19 @@ Instructions:
 6. Always cite your sources with the doc_id
 7. Be factual and objective - report what the documents say
 8. If you cannot find information, say so clearly
+
+**CRITICAL - Graph/Connection Questions:**
+When the user asks about connections, relationships, or links between people, you MUST use the graph tools:
+- Use `get_connection_graph` for questions like:
+  - "connexion entre X et Y" / "connection between X and Y"
+  - "relation entre..." / "relationship between..."
+  - "lien entre..." / "link between..."
+  - "comment X est lié à Y" / "how is X connected to Y"
+  - "réseau de X" / "network of X"
+  - "qui connaît X" / "who knows X"
+- Use `find_connection_path` to find the shortest path between two people
+
+The graph data will be displayed visually by the frontend. Always use these tools for connection questions!
 
 IMPORTANT: Always respond in the same language as the user's question. If the question is in French, respond in French. If in Spanish, respond in Spanish. Always match the user's language."""
 
@@ -498,11 +559,38 @@ class SourceInfo(BaseModel):
     image_url: str | None = None
 
 
+class GraphNode(BaseModel):
+    id: str
+    label: str
+    connections: int = 0
+    is_queried: bool = False
+    doc_ids: list[str] = []
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+    action: str | None = None
+    label: str | None = None
+    doc_id: str | None = None
+    doc_ids: list[str] = []
+    count: int = 1
+
+
+class GraphData(BaseModel):
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+    queried_persons: list[str] = []
+    path_length: int | None = None
+    found: bool = True
+
+
 class QueryResponse(BaseModel):
     answer: str
     sources: list[SourceInfo]
     tool_calls: list[dict]
     conversation_title: str | None = None
+    graph: GraphData | None = None
 
 
 class StreamEvent(BaseModel):
@@ -648,6 +736,7 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
         final_answer = ""
         sources_dict = {}  # Use dict to dedupe by doc_id
         tool_calls_info = []
+        graph_data = None  # Graph data from connection tools
 
         for msg in messages:
             # Collecter les tool calls
@@ -658,11 +747,46 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
                         "args": tc["args"],
                     })
 
-            # Extraire les sources des résultats d'outils
+            # Extraire les sources et graph data des résultats d'outils
             if isinstance(msg, ToolMessage):
                 try:
                     content = json.loads(msg.content)
-                    if isinstance(content, list):
+
+                    # Check for graph data (from get_connection_graph or find_connection_path)
+                    if isinstance(content, dict) and content.get("_type") in ("graph", "path"):
+                        # Extract graph data
+                        nodes = [
+                            GraphNode(
+                                id=n.get("id", ""),
+                                label=n.get("label", n.get("id", "")),
+                                connections=n.get("connections", 0),
+                                is_queried=n.get("is_queried", False),
+                                doc_ids=n.get("doc_ids", [])
+                            )
+                            for n in content.get("nodes", [])
+                        ]
+                        edges = [
+                            GraphEdge(
+                                source=e.get("source", ""),
+                                target=e.get("target", ""),
+                                action=e.get("action"),
+                                label=e.get("label"),
+                                doc_id=e.get("doc_id"),
+                                doc_ids=e.get("doc_ids", []),
+                                count=e.get("count", 1)
+                            )
+                            for e in content.get("edges", [])
+                        ]
+                        graph_data = GraphData(
+                            nodes=nodes,
+                            edges=edges,
+                            queried_persons=content.get("queried_persons", []),
+                            path_length=content.get("path_length"),
+                            found=content.get("found", True)
+                        )
+
+                    # Extract document sources
+                    elif isinstance(content, list):
                         for item in content:
                             if isinstance(item, dict) and "doc_id" in item:
                                 doc_id = item["doc_id"]
@@ -697,6 +821,7 @@ async def query_documents(request: QueryRequest, _: str = Depends(verify_api_key
             sources=list(sources_dict.values()),
             tool_calls=tool_calls_info,
             conversation_title=conversation_title,
+            graph=graph_data,
         )
 
     except Exception as e:
@@ -743,8 +868,9 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                     if hasattr(tool_output, "content"):
                         tool_output = tool_output.content
 
-                    # Extraire les sources avec métadonnées et texte complet
+                    # Extraire les sources et graph data
                     sources = []
+                    graph_data = None
                     seen_doc_ids = set()
                     try:
                         # Handle both string JSON and already parsed objects
@@ -753,7 +879,17 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                         else:
                             parsed = tool_output
 
-                        if isinstance(parsed, list):
+                        # Check for graph data (from get_connection_graph or find_connection_path)
+                        if isinstance(parsed, dict) and parsed.get("_type") in ("graph", "path"):
+                            graph_data = {
+                                "nodes": parsed.get("nodes", []),
+                                "edges": parsed.get("edges", []),
+                                "queried_persons": parsed.get("queried_persons", []),
+                                "path_length": parsed.get("path_length"),
+                                "found": parsed.get("found", True),
+                                "depth": parsed.get("depth")
+                            }
+                        elif isinstance(parsed, list):
                             for item in parsed:
                                 if isinstance(item, dict) and "doc_id" in item:
                                     doc_id = item["doc_id"]
@@ -783,7 +919,11 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                     except (json.JSONDecodeError, TypeError):
                         pass
 
-                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'sources': sources}, ensure_ascii=False)}\n\n"
+                    # Send graph data as separate event type
+                    if graph_data:
+                        yield f"data: {json.dumps({'type': 'graph', 'tool_name': tool_name, 'graph': graph_data}, ensure_ascii=False)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': tool_name, 'sources': sources}, ensure_ascii=False)}\n\n"
 
             # Générer le titre à partir du résumé de la conversation
             try:
