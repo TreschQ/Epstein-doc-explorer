@@ -525,27 +525,28 @@ def get_relationships_for_actor(actor: str, limit: int = 50) -> list[dict]:
     cursor = conn.cursor()
 
     if _is_postgres():
+        # Requête optimisée avec UNION pour utiliser les index trigram
         cursor.execute("""
-            SELECT t.doc_id, t.timestamp, t.actor, t.action, t.target, t.location,
-                   t.explicit_topic, t.implicit_topic
-            FROM rdf_triples t
-            LEFT JOIN entity_aliases a ON t.actor = a.original_name
-            WHERE t.actor ILIKE %s OR t.target ILIKE %s
-               OR a.canonical_name ILIKE %s
-            ORDER BY t.timestamp
+            SELECT DISTINCT ON (doc_id)
+                doc_id, timestamp, actor, action, target, location, explicit_topic, implicit_topic
+            FROM (
+                SELECT doc_id, timestamp, actor, action, target, location, explicit_topic, implicit_topic
+                FROM rdf_triples WHERE actor ILIKE %s
+                UNION ALL
+                SELECT doc_id, timestamp, actor, action, target, location, explicit_topic, implicit_topic
+                FROM rdf_triples WHERE target ILIKE %s
+            ) AS sub
+            ORDER BY doc_id, timestamp
             LIMIT %s
-        """, [f"%{actor}%", f"%{actor}%", f"%{actor}%", limit])
+        """, [f"%{actor}%", f"%{actor}%", limit])
     else:
         cursor.execute("""
-            SELECT t.doc_id, t.timestamp, t.actor, t.action, t.target, t.location,
-                   t.explicit_topic, t.implicit_topic
-            FROM rdf_triples t
-            LEFT JOIN entity_aliases a ON t.actor = a.original_name
-            WHERE t.actor LIKE ? OR t.target LIKE ?
-               OR a.canonical_name LIKE ?
-            ORDER BY t.timestamp
+            SELECT DISTINCT doc_id, timestamp, actor, action, target, location, explicit_topic, implicit_topic
+            FROM rdf_triples
+            WHERE actor LIKE ? OR target LIKE ?
+            ORDER BY timestamp
             LIMIT ?
-        """, [f"%{actor}%", f"%{actor}%", f"%{actor}%", limit])
+        """, [f"%{actor}%", f"%{actor}%", limit])
 
     results = []
     for row in cursor:
