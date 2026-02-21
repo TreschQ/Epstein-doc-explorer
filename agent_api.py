@@ -726,13 +726,13 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                 if event_type == "on_chat_model_stream":
                     chunk = event.get("data", {}).get("chunk")
                     if chunk and hasattr(chunk, "content") and chunk.content:
-                        yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
+                        yield f"data: {json.dumps({'type': 'token', 'content': chunk.content}, ensure_ascii=False)}\n\n"
 
                 # Début d'un appel d'outil
                 elif event_type == "on_tool_start":
                     tool_name = event.get("name", "unknown")
                     tool_input = event.get("data", {}).get("input", {})
-                    yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': tool_name, 'tool_args': tool_input})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': tool_name, 'tool_args': tool_input}, ensure_ascii=False)}\n\n"
 
                 # Fin d'un appel d'outil
                 elif event_type == "on_tool_end":
@@ -796,11 +796,11 @@ async def query_documents_stream(request: QueryRequest, _: str = Depends(verify_
                 question = request.question.strip()
                 conversation_title = question[:50].rsplit(" ", 1)[0] + "..." if len(question) > 50 else question
 
-            yield f"data: {json.dumps({'type': 'done', 'conversation_title': conversation_title})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation_title': conversation_title}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             logger.exception("Erreur /api/query/stream: %s", e)
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         generate(),
